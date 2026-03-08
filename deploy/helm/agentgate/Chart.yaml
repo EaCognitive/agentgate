@@ -1,0 +1,33 @@
+apiVersion: v2
+name: agentgate
+description: Enterprise-grade security gateway for AI agents with middleware, tracing, and auto-rollback
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - ai
+  - agents
+  - security
+  - middleware
+  - llm
+  - gateway
+
+home: https://github.com/EaCognitive/agentgate
+sources:
+  - https://github.com/EaCognitive/agentgate
+
+maintainers:
+  - name: Erick Aleman
+    email: erick@agentgate.dev
+
+# Dependencies - using Bitnami charts for PostgreSQL and Redis
+dependencies:
+  - name: postgresql
+    version: 12.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: 17.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

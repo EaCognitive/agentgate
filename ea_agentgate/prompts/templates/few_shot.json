@@ -1,0 +1,80 @@
+{
+  "templates": [
+    {
+      "name": "Sentiment Analysis",
+      "category": "few_shot",
+      "description": "Text sentiment classification with dynamically rendered examples",
+      "system_prompt": "Classify the sentiment of text as positive, negative, or neutral.",
+      "user_prompt_prefix": "Analyze the sentiment of the following text:\n\n{% if examples %}Here are some examples:\n\n{% for example in examples[:3] -%}\nExample {{ loop.index }}:\nInput: {{ example.input|truncate_tokens(50) }}\nOutput: {{ example.output|sanitize }}\n\n{% endfor %}{% endif %}Now analyze:\n{{ text|escape_prompt }}",
+      "variables": {
+        "text": "The text to analyze",
+        "examples": [
+          {
+            "input": "I absolutely love this product! It exceeded all my expectations.",
+            "output": "Sentiment: Positive\nConfidence: High\nReason: Strong positive language ('absolutely love', 'exceeded expectations')"
+          },
+          {
+            "input": "The service was okay, nothing special.",
+            "output": "Sentiment: Neutral\nConfidence: Medium\nReason: Lukewarm language ('okay', 'nothing special') indicates neither strong positive nor negative feelings"
+          },
+          {
+            "input": "Terrible experience. Would not recommend to anyone.",
+            "output": "Sentiment: Negative\nConfidence: High\nReason: Clear negative language ('terrible', 'would not recommend')"
+          }
+        ]
+      },
+      "tags": ["nlp", "sentiment", "classification"],
+      "metadata": {
+        "recommended_models": ["gpt-3.5-turbo", "gpt-4"],
+        "temperature": 0.3
+      }
+    },
+    {
+      "name": "Entity Extraction",
+      "category": "few_shot",
+      "description": "Extract structured entities from unstructured text",
+      "system_prompt": "Extract named entities (people, organizations, locations, dates) from text.",
+      "user_prompt_prefix": "Extract entities from the following text:\n\n",
+      "variables": {
+        "text": "The text to process"
+      },
+      "examples": [
+        {
+          "input": "Apple Inc. announced on January 15, 2024 that Tim Cook will speak at the San Francisco conference.",
+          "output": "{\n  \"organizations\": [\"Apple Inc.\"],\n  \"people\": [\"Tim Cook\"],\n  \"locations\": [\"San Francisco\"],\n  \"dates\": [\"January 15, 2024\"]\n}"
+        },
+        {
+          "input": "The meeting with Microsoft representatives will be held in Seattle next Tuesday.",
+          "output": "{\n  \"organizations\": [\"Microsoft\"],\n  \"people\": [],\n  \"locations\": [\"Seattle\"],\n  \"dates\": [\"next Tuesday\"]\n}"
+        }
+      ],
+      "tags": ["ner", "extraction", "nlp"],
+      "metadata": {
+        "recommended_models": ["gpt-4", "claude-3"],
+        "temperature": 0.2
+      }
+    },
+    {
+      "name": "Text Summarization",
+      "category": "few_shot",
+      "description": "Concise summarization with key points",
+      "system_prompt": "Create concise, informative summaries that capture key points.",
+      "user_prompt_prefix": "Summarize the following text:\n\n",
+      "user_prompt_suffix": "\n\nProvide a 2-3 sentence summary focusing on the main points.",
+      "variables": {
+        "text": "The text to summarize"
+      },
+      "examples": [
+        {
+          "input": "The new software update includes several bug fixes and performance improvements. Users have reported faster load times and smoother animations. The development team also added three new features based on user feedback: dark mode, custom shortcuts, and offline support.",
+          "output": "The software update brings bug fixes, performance improvements, and three user-requested features. Users are experiencing faster load times and smoother animations. New additions include dark mode, custom shortcuts, and offline support."
+        }
+      ],
+      "tags": ["summarization", "nlp", "content"],
+      "metadata": {
+        "recommended_models": ["gpt-3.5-turbo", "gpt-4"],
+        "temperature": 0.5
+      }
+    }
+  ]
+}

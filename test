@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""
+AgentGate Test Runner
+
+Parallel test execution with Allure reporting for professional test visualization.
+
+Usage:
+    ./test                          Run all tests in parallel (auto-opens report)
+    ./test -k "pii"                 Pass-through to pytest
+    ./test tests/test_agent.py      Specific file
+    ./test --no-parallel            Sequential mode
+    ./test --workers 4              Specific worker count
+    ./test --no-open                Don't auto-open Allure report
+    ./test --report                 Generate and open Allure HTML report (no tests)
+    ./test --serve                  Serve Allure report (live reload)
+    ./test --help-test              Show this help
+"""
+
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from atexit import register
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ALLURE_RESULTS = PROJECT_ROOT / "allure-results"
+ALLURE_REPORT = PROJECT_ROOT / "allure-report"
+ALLURE_HISTORY = PROJECT_ROOT / ".allure-history"
+_ACTIVE_CHILD: subprocess.Popen[str] | None = None
+_INTERRUPT_SIGNAL: int | None = None
+
+
+def get_python_executable():
+    """Return the Python executable to use for running pytest."""
+    venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+    if venv_python.is_file():
+        return str(venv_python)
+    return sys.executable
+
+
+def _signal_label(signum: int) -> str:
+    """Return readable signal name for logs."""
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return str(signum)
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen[str],
+    *,
+    grace_seconds: float = 5.0,
+) -> None:
+    """Terminate the child process and all descendants."""
+    if process.poll() is not None:
+        return
+
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.terminate()
+    else:
+        process.terminate()
+
+    deadline = time.monotonic() + grace_seconds
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    if process.poll() is not None:
+        return
+
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(process.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+    else:
+        process.kill()
+
+
+def _shutdown_handler(signum: int, _frame) -> None:
+    """Forward shutdown signals to the active child process group."""
+    global _INTERRUPT_SIGNAL
+    _INTERRUPT_SIGNAL = signum
+    if _ACTIVE_CHILD is None:
+        return
+    print(
+        f"\n{YELLOW}Received {_signal_label(signum)}; terminating test workers...{RESET}",
+        file=sys.stderr,
+    )
+    _terminate_process_tree(_ACTIVE_CHILD)
+
+
+def _install_shutdown_handlers() -> dict[int, object]:
+    """Install shutdown handlers and return prior handlers."""
+    previous: dict[int, object] = {}
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+
+    for sig in signals:
+        previous[sig] = signal.getsignal(sig)
+        signal.signal(sig, _shutdown_handler)
+    return previous
+
+
+def _restore_shutdown_handlers(previous: dict[int, object]) -> None:
+    """Restore prior signal handlers after child completion."""
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
+
+
+def _cleanup_active_child() -> None:
+    """Best-effort reaping for abnormal parent exits."""
+    if _ACTIVE_CHILD is None:
+        return
+    _terminate_process_tree(_ACTIVE_CHILD, grace_seconds=1.0)
+
+
+register(_cleanup_active_child)
+
+
+# ANSI color codes
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+HELP_TEXT = f"""{BOLD}AgentGate Test Runner{RESET}
+
+{BOLD}USAGE:{RESET}
+    ./test                          Run all tests in parallel (auto-opens report)
+    ./test [PYTEST_ARGS...]         Pass arguments through to pytest
+    ./test [OPTIONS]                Runner-specific options
+
+{BOLD}OPTIONS:{RESET}
+    --no-parallel                   Run tests sequentially (no xdist)
+    --workers N                     Use N parallel workers (default: auto)
+    --no-open                       Don't auto-open Allure report after tests
+    --no-clean                      Keep previous test results (accumulate)
+    --report                        Generate and open Allure HTML report (no tests)
+    --serve                         Serve Allure report with live reload
+    --clean                         Clear all Allure results, reports, and history
+    --help-test                     Show this help message
+
+{BOLD}EXAMPLES:{RESET}
+    ./test                          Run all tests, auto-open report when done
+    ./test -k "pii"                 Run only tests matching "pii"
+    ./test tests/test_agent.py      Run a specific test file
+    ./test --workers 4              Use exactly 4 workers
+    ./test --no-parallel -x         Run sequentially, stop on first failure
+    ./test --no-open                Run tests without opening report
+    ./test --report                 View Allure report in browser (no tests)
+
+{BOLD}ALLURE REPORTS:{RESET}
+    Test results are saved to allure-results/. After each test run, the Allure
+    report automatically opens in your browser showing pass/fail trends,
+    categories, and detailed failure traces.
+
+    History is preserved in .allure-history/ for trend graphs across runs.
+"""
+
+
+def parse_runner_args(argv):
+    """Separate runner-specific flags from pytest arguments."""
+    runner_opts = {
+        "no_parallel": False,
+        "workers": None,
+        "no_open": False,
+        "no_clean": False,
+        "report": False,
+        "serve": False,
+        "clean": False,
+        "help_test": False,
+    }
+    pytest_args = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--no-parallel":
+            runner_opts["no_parallel"] = True
+        elif arg == "--workers":
+            i += 1
+            if i < len(argv):
+                runner_opts["workers"] = int(argv[i])
+            else:
+                print(f"{RED}Error: --workers requires a number{RESET}", file=sys.stderr)
+                sys.exit(2)
+        elif arg == "--no-open":
+            runner_opts["no_open"] = True
+        elif arg == "--no-clean":
+            runner_opts["no_clean"] = True
+        elif arg == "--report":
+            runner_opts["report"] = True
+        elif arg == "--serve":
+            runner_opts["serve"] = True
+        elif arg == "--clean":
+            runner_opts["clean"] = True
+        elif arg == "--help-test":
+            runner_opts["help_test"] = True
+        else:
+            pytest_args.append(arg)
+        i += 1
+    return runner_opts, pytest_args
+
+
+def parse_pytest_output(output: str) -> tuple[int, int, int, int, int]:
+    """Parse pytest summary line to extract test counts.
+
+    Returns: (passed, failed, errors, skipped, warnings)
+    """
+    # Match patterns like "1654 passed, 1 failed, 4454 warnings"
+    passed = failed = errors = skipped = warnings = 0
+
+    # Look for the summary line
+    match = re.search(r'(\d+) passed', output)
+    if match:
+        passed = int(match.group(1))
+
+    match = re.search(r'(\d+) failed', output)
+    if match:
+        failed = int(match.group(1))
+
+    match = re.search(r'(\d+) error', output)
+    if match:
+        errors = int(match.group(1))
+
+    match = re.search(r'(\d+) skipped', output)
+    if match:
+        skipped = int(match.group(1))
+
+    match = re.search(r'(\d+) warning', output)
+    if match:
+        warnings = int(match.group(1))
+
+    return passed, failed, errors, skipped, warnings
+
+
+def print_summary(
+    passed,
+    failed,
+    errors,
+    skipped,
+    warnings,
+    duration,
+    workers,
+    result_code,
+    interrupt_signal,
+):
+    """Print a short post-run summary."""
+    interrupted = interrupt_signal is not None
+    is_pass = result_code == 0 and failed == 0 and errors == 0 and not interrupted
+    if interrupted:
+        status = f"{YELLOW}{BOLD}INTERRUPTED{RESET}"
+    else:
+        status = (
+            f"{GREEN}{BOLD}PASSED{RESET}"
+            if is_pass
+            else f"{RED}{BOLD}FAILED{RESET}"
+        )
+
+    parts = []
+    if passed:
+        parts.append(f"{GREEN}{passed} passed{RESET}")
+    if failed:
+        parts.append(f"{RED}{failed} failed{RESET}")
+    if errors:
+        parts.append(f"{RED}{errors} errors{RESET}")
+    if skipped:
+        parts.append(f"{YELLOW}{skipped} skipped{RESET}")
+    if warnings:
+        parts.append(f"{YELLOW}{warnings} warnings{RESET}")
+    if interrupted:
+        parts.append(
+            f"{YELLOW}interrupted ({_signal_label(interrupt_signal)}){RESET}"
+        )
+
+    worker_info = f" ({workers} workers)" if workers and workers != "sequential" else ""
+
+    print()
+    print(f"{BOLD}{'=' * 70}{RESET}")
+    print(f" {status} | {', '.join(parts) if parts else 'no tests'} | {duration:.1f}s{worker_info}")
+    print(f"{BOLD}{'=' * 70}{RESET}")
+    print()
+
+
+def preserve_history():
+    """Copy history from previous report to preserve trends."""
+    history_src = ALLURE_REPORT / "history"
+    if history_src.exists():
+        ALLURE_HISTORY.mkdir(exist_ok=True)
+        # Copy history files
+        for item in history_src.iterdir():
+            dest = ALLURE_HISTORY / item.name
+            if item.is_file():
+                shutil.copy2(item, dest)
+
+
+def restore_history():
+    """Restore history to results directory for trend preservation."""
+    if ALLURE_HISTORY.exists():
+        history_dest = ALLURE_RESULTS / "history"
+        history_dest.mkdir(exist_ok=True)
+        for item in ALLURE_HISTORY.iterdir():
+            if item.is_file():
+                shutil.copy2(item, history_dest / item.name)
+
+
+def clean_results_before_run():
+    """Clean results directory before running tests (preserves history)."""
+    # First, preserve existing history
+    preserve_history()
+
+    # Remove old results
+    if ALLURE_RESULTS.exists():
+        shutil.rmtree(ALLURE_RESULTS)
+
+    # Create fresh results directory
+    ALLURE_RESULTS.mkdir(exist_ok=True)
+
+    # Restore history for trends
+    restore_history()
+
+
+def run_tests(runner_opts, pytest_args):
+    """Execute pytest with Allure reporting."""
+    global _ACTIVE_CHILD, _INTERRUPT_SIGNAL
+    python = get_python_executable()
+    cmd = [python, "-m", "pytest"]
+
+    # Determine parallelism
+    workers = None
+    if not runner_opts["no_parallel"]:
+        if runner_opts["workers"]:
+            workers = runner_opts["workers"]
+            cmd.extend(["-n", str(workers)])
+        else:
+            workers = "auto"
+            cmd.extend(["-n", "auto"])
+        cmd.extend(["--dist", "loadfile"])
+
+    # Allure results directory
+    cmd.extend(["--alluredir", str(ALLURE_RESULTS)])
+
+    cmd.extend(pytest_args)
+
+    # Clean previous results unless --no-clean is specified
+    if not runner_opts["no_clean"]:
+        print(f"{DIM}Cleaning previous test results (preserving history)...{RESET}")
+        clean_results_before_run()
+
+    # Print what we're running
+    parallel_desc = "sequential" if runner_opts["no_parallel"] else f"-n {workers} --dist loadfile"
+    print(f"{CYAN}Running: {parallel_desc}{RESET}")
+    print(f"{DIM}{' '.join(cmd)}{RESET}")
+    print()
+
+    start = time.monotonic()
+    _INTERRUPT_SIGNAL = None
+    previous_handlers = _install_shutdown_handlers()
+    popen_kwargs: dict[str, object] = {
+        "cwd": PROJECT_ROOT,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "bufsize": 1,
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+
+    output_chunks: list[str] = []
+    result_code = 1
+    try:
+        process = subprocess.Popen(cmd, **popen_kwargs)
+        _ACTIVE_CHILD = process
+        assert process.stdout is not None
+
+        for line in process.stdout:
+            print(line, end="")
+            output_chunks.append(line)
+
+        result_code = process.wait()
+    finally:
+        _ACTIVE_CHILD = None
+        _restore_shutdown_handlers(previous_handlers)
+
+    duration = time.monotonic() - start
+
+    # Parse results from pytest output
+    output = "".join(output_chunks)
+    passed, failed, errors, skipped, warnings = parse_pytest_output(output)
+
+    print_summary(
+        passed, failed, errors, skipped, warnings,
+        duration,
+        workers if not runner_opts["no_parallel"] else None,
+        result_code,
+        _INTERRUPT_SIGNAL,
+    )
+
+    # Auto-open report unless --no-open is specified
+    if not runner_opts["no_open"]:
+        print(f"{CYAN}Generating and opening Allure report...{RESET}")
+        generate_report(open_browser=True)
+    else:
+        print(f"{DIM}Run ./test --report to view the Allure report{RESET}")
+
+    if _INTERRUPT_SIGNAL is not None:
+        return 128 + _INTERRUPT_SIGNAL
+    return result_code
+
+
+def generate_report(open_browser=True):
+    """Generate Allure HTML report and optionally open in browser."""
+    if not ALLURE_RESULTS.exists() or not list(ALLURE_RESULTS.glob("*")):
+        print(f"{RED}No test results found. Run ./test first.{RESET}")
+        return 1
+
+    # Preserve history before generating new report
+    preserve_history()
+
+    print(f"{DIM}Generating Allure report...{RESET}")
+    result = subprocess.run(
+        ["npx", "allure-commandline", "generate", str(ALLURE_RESULTS),
+         "-o", str(ALLURE_REPORT), "--clean"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        print(f"{RED}Failed to generate report. Make sure npx is installed.{RESET}")
+        if result.stderr:
+            print(result.stderr)
+        return 1
+
+    print(f"{GREEN}Report generated at {ALLURE_REPORT}{RESET}")
+
+    if open_browser:
+        print(f"{CYAN}Opening report in browser...{RESET}")
+        subprocess.Popen(
+            ["npx", "allure-commandline", "open", str(ALLURE_REPORT)],
+            cwd=PROJECT_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+    return 0
+
+
+def serve_report():
+    """Serve Allure report with live reload."""
+    if not ALLURE_RESULTS.exists() or not list(ALLURE_RESULTS.glob("*")):
+        print(f"{RED}No test results found. Run ./test first.{RESET}")
+        return 1
+
+    print(f"{CYAN}Serving Allure report (Ctrl+C to stop)...{RESET}")
+    subprocess.run(
+        ["npx", "allure-commandline", "serve", str(ALLURE_RESULTS)],
+        cwd=PROJECT_ROOT
+    )
+    return 0
+
+
+def clean_all():
+    """Remove all Allure results, reports, and history."""
+    count = 0
+    if ALLURE_RESULTS.exists():
+        count += len(list(ALLURE_RESULTS.rglob("*")))
+        shutil.rmtree(ALLURE_RESULTS)
+    if ALLURE_REPORT.exists():
+        shutil.rmtree(ALLURE_REPORT)
+    if ALLURE_HISTORY.exists():
+        shutil.rmtree(ALLURE_HISTORY)
+    print(f"{GREEN}Cleared Allure results, reports, and history ({count} files).{RESET}")
+
+
+def main():
+    runner_opts, pytest_args = parse_runner_args(sys.argv[1:])
+
+    if runner_opts["help_test"]:
+        print(HELP_TEXT)
+        return 0
+
+    if runner_opts["clean"]:
+        clean_all()
+        return 0
+
+    if runner_opts["report"]:
+        return generate_report(open_browser=True)
+
+    if runner_opts["serve"]:
+        return serve_report()
+
+    return run_tests(runner_opts, pytest_args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

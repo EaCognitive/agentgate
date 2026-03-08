@@ -1,0 +1,253 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentgate.fullname" . }}-server
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.server.autoscaling.enabled }}
+  replicas: {{ .Values.server.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agentgate.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.server.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "agentgate.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.server.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "agentgate.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.server.podSecurityContext | nindent 8 }}
+      {{- if or .Values.initContainers.migrations.enabled .Values.initContainers.guardrailsSync.enabled }}
+      initContainers:
+        {{- if .Values.initContainers.migrations.enabled }}
+        - name: migrations
+          image: "{{ .Values.initContainers.migrations.image.repository }}:{{ .Values.initContainers.migrations.image.tag }}"
+          command:
+            {{- toYaml .Values.initContainers.migrations.command | nindent 12 }}
+          env:
+            - name: AGENTGATE_ENV
+              value: {{ .Values.server.env.AGENTGATE_ENV | quote }}
+            - name: AGENTGATE_RUNTIME_PROFILE
+              value: {{ .Values.server.env.AGENTGATE_RUNTIME_PROFILE | quote }}
+            - name: DATABASE_AUTH_MODE
+              value: {{ .Values.server.env.DATABASE_AUTH_MODE | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: database-url
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+        {{- end }}
+        {{- if .Values.initContainers.guardrailsSync.enabled }}
+        - name: guardrails-sync
+          image: "{{ .Values.initContainers.guardrailsSync.image.repository }}:{{ .Values.initContainers.guardrailsSync.image.tag }}"
+          command:
+            {{- toYaml .Values.initContainers.guardrailsSync.command | nindent 12 }}
+          env:
+            - name: AGENTGATE_ENV
+              value: {{ .Values.server.env.AGENTGATE_ENV | quote }}
+            - name: AGENTGATE_RUNTIME_PROFILE
+              value: {{ .Values.server.env.AGENTGATE_RUNTIME_PROFILE | quote }}
+            - name: DATABASE_AUTH_MODE
+              value: {{ .Values.server.env.DATABASE_AUTH_MODE | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: database-url
+            - name: GIT_SHA
+              value: {{
+                required
+                "initContainers.guardrailsSync.gitSha must be set to a deterministic commit SHA"
+                .Values.initContainers.guardrailsSync.gitSha
+                | quote
+              }}
+            - name: GUARDRAILS_SYNC_PATH
+              value: {{ .Values.initContainers.guardrailsSync.path | quote }}
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: server
+          securityContext:
+            {{- toYaml .Values.server.securityContext | nindent 12 }}
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.service.targetPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.server.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.server.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          env:
+            {{- range $key, $value := .Values.server.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: redis-url
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: secret-key
+            - name: ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-config
+                  key: allowed-origins
+            - name: AGENTGATE_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: hmac-secret
+            - name: AGENTGATE_DECISION_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: decision-signing-key
+            - name: AGENTGATE_HONEY_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: honey-salt
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /app/.cache
+            - name: state
+              mountPath: /app/state
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        - name: state
+          emptyDir: {}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{- if .Values.dashboard.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentgate.fullname" . }}-dashboard
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  {{- if not .Values.dashboard.autoscaling.enabled }}
+  replicas: {{ .Values.dashboard.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "agentgate.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dashboard
+  template:
+    metadata:
+      labels:
+        {{- include "agentgate.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
+        {{- with .Values.dashboard.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.dashboard.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          env:
+            {{- range $key, $value := .Values.dashboard.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: NEXTAUTH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-config
+                  key: nextauth-url
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentgate.fullname" . }}-secrets
+                  key: nextauth-secret
+            - name: API_URL
+              value: "http://{{ include "agentgate.fullname" . }}-server:{{ .Values.server.service.port }}"
+{{- end }}

@@ -1,0 +1,188 @@
+name: Formal Chaos Campaign
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      compliance_profile:
+        description: "Compliance profile (development|soc2|soc3|hipaa|regulated)"
+        required: false
+        default: "soc2"
+        type: choice
+        options:
+          - development
+          - soc2
+          - soc3
+          - hipaa
+          - regulated
+      identity_profile:
+        description: "Identity profile (local|hybrid_migration|descope|custom_oidc)"
+        required: false
+        default: "hybrid_migration"
+        type: choice
+        options:
+          - local
+          - hybrid_migration
+          - descope
+          - custom_oidc
+      iterations:
+        description: "Optional iteration override"
+        required: false
+        default: ""
+        type: string
+      workers:
+        description: "Optional worker override"
+        required: false
+        default: ""
+        type: string
+      seed:
+        description: "Random seed"
+        required: false
+        default: "42"
+        type: string
+      allow_identity_mismatch:
+        description: "Allow compliance/identity mismatch"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: formal-chaos-campaign-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "latest"
+
+jobs:
+  chaos-campaign:
+    name: Runtime Chaos Campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      AGENTGATE_ENV: staging
+      TESTING: "true"
+      AGENTGATE_Z3_MODE: enforce
+      AGENTGATE_FORCE_REMOTE_VERIFICATION: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra server
+
+      - name: Resolve campaign configuration
+        run: |
+          COMPLIANCE_PROFILE="${{ github.event.inputs.compliance_profile }}"
+          IDENTITY_PROFILE="${{ github.event.inputs.identity_profile }}"
+          ITERATIONS="${{ github.event.inputs.iterations }}"
+          WORKERS="${{ github.event.inputs.workers }}"
+          SEED="${{ github.event.inputs.seed }}"
+
+          if [ -z "$COMPLIANCE_PROFILE" ]; then
+            COMPLIANCE_PROFILE="soc2"
+          fi
+          if [ -z "$IDENTITY_PROFILE" ]; then
+            IDENTITY_PROFILE="hybrid_migration"
+          fi
+          if [ -z "$SEED" ]; then
+            SEED="42"
+          fi
+
+          echo "CHAOS_COMPLIANCE_PROFILE=$COMPLIANCE_PROFILE" >> "$GITHUB_ENV"
+          echo "CHAOS_IDENTITY_PROFILE=$IDENTITY_PROFILE" >> "$GITHUB_ENV"
+          echo "CHAOS_SEED=$SEED" >> "$GITHUB_ENV"
+          echo "IDENTITY_PROVIDER_MODE=$IDENTITY_PROFILE" >> "$GITHUB_ENV"
+
+          if [ -n "$ITERATIONS" ]; then
+            echo "CHAOS_ITERATIONS=$ITERATIONS" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$WORKERS" ]; then
+            echo "CHAOS_WORKERS=$WORKERS" >> "$GITHUB_ENV"
+          fi
+
+          if [ "${{ github.event.inputs.allow_identity_mismatch }}" = "true" ]; then
+            echo "CHAOS_ALLOW_IDENTITY_PROFILE_MISMATCH=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run enforce-mode chaos campaign
+        id: campaign
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from tests.security.formal_verification.test_chaos_verification import (
+              resolve_chaos_campaign_configuration,
+              run_chaos_verification,
+          )
+
+          seed = int(os.getenv("CHAOS_SEED", "42"))
+          config = resolve_chaos_campaign_configuration(seed=seed)
+          report = run_chaos_verification(
+              iterations=config.iterations,
+              workers=config.workers,
+              seed=config.seed,
+              require_enforce_runtime=True,
+              compliance_profile=config.compliance_profile,
+              identity_profile=config.identity_profile,
+          )
+
+          if report.get("invariant_violations", 1) != 0:
+              raise SystemExit("Chaos campaign reported invariant violations")
+          if report.get("solver_backend_distribution", {}).get("z3", 0) <= 0:
+              raise SystemExit("Chaos campaign did not report runtime z3 backend evidence")
+          if report.get("z3_failure_count", 1) != 0:
+              raise SystemExit("Chaos campaign reported runtime z3 failures")
+          if report.get("z3_drift_count", 1) != 0:
+              raise SystemExit("Chaos campaign reported runtime z3 drift")
+
+          report_path = Path("chaos-campaign-report.json")
+          report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+          run_dir = Path("tests/artifacts") / (
+              f"chaos_verification_run_{report['run_timestamp']}_{report['run_id']}"
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
+              out.write(f"run_dir={run_dir.as_posix()}\n")
+              out.write(f"run_id={report['run_id']}\n")
+          PY
+
+      - name: Upload campaign report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-campaign-report-${{ steps.campaign.outputs.run_id }}
+          path: |
+            chaos-campaign-report.json
+            tests/artifacts/**/FAIL_FAST_TRACE.json
+          retention-days: 30
+
+      - name: Scrub campaign artifacts for share publish
+        if: always() && steps.campaign.outputs.run_dir != ''
+        run: |
+          uv run python scripts/scrub_formal_artifacts.py \
+            --source-dir "${{ steps.campaign.outputs.run_dir }}" \
+            --output-dir "tests/artifacts/share/chaos-${{ steps.campaign.outputs.run_id }}"
+
+      - name: Upload campaign artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-campaign-artifacts-${{ steps.campaign.outputs.run_id }}
+          path: |
+            tests/artifacts/share/chaos-${{ steps.campaign.outputs.run_id }}
+            tests/artifacts/**/FAIL_FAST_TRACE.json
+          retention-days: 30

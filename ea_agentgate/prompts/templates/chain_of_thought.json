@@ -1,0 +1,63 @@
+{
+  "templates": [
+    {
+      "name": "Mathematical Reasoning",
+      "category": "chain_of_thought",
+      "description": "Step-by-step mathematical problem solving with explicit reasoning",
+      "system_prompt": "You are a mathematical reasoning assistant. Break down problems into clear, logical steps.",
+      "user_prompt_prefix": "Let's solve this step-by-step:\n\n",
+      "user_prompt_suffix": "\n\nPlease show your work for each step and explain your reasoning.",
+      "variables": {
+        "problem": "The mathematical problem to solve"
+      },
+      "examples": [
+        {
+          "input": "What is 15% of 200?",
+          "output": "Step 1: Convert percentage to decimal: 15% = 0.15\nStep 2: Multiply: 200 × 0.15 = 30\nTherefore: 15% of 200 is 30"
+        },
+        {
+          "input": "If a train travels 60 mph for 2.5 hours, how far does it go?",
+          "output": "Step 1: Identify the formula: Distance = Speed × Time\nStep 2: Substitute values: Distance = 60 mph × 2.5 hours\nStep 3: Calculate: Distance = 150 miles\nTherefore: The train travels 150 miles"
+        }
+      ],
+      "tags": ["math", "reasoning", "education"],
+      "metadata": {
+        "recommended_models": ["gpt-4", "claude-3"],
+        "temperature": 0.1
+      }
+    },
+    {
+      "name": "Logical Deduction",
+      "category": "chain_of_thought",
+      "description": "Structured logical reasoning for complex decision-making",
+      "system_prompt": "You are a logical reasoning expert. Analyze problems systematically, considering all relevant factors.",
+      "user_prompt_prefix": "Let's analyze this logically:\n\n",
+      "user_prompt_suffix": "\n\nBreak down your reasoning into clear premises and conclusions.",
+      "variables": {
+        "scenario": "The logical problem or scenario to analyze"
+      },
+      "tags": ["logic", "reasoning", "analysis"],
+      "metadata": {
+        "recommended_models": ["gpt-4", "claude-3"],
+        "temperature": 0.2
+      }
+    },
+    {
+      "name": "Code Debugging",
+      "category": "chain_of_thought",
+      "description": "Systematic debugging approach with hypothesis testing",
+      "system_prompt": "You are an expert debugger. Approach problems methodically: identify symptoms, form hypotheses, test, and verify.",
+      "user_prompt_prefix": "Let's debug this systematically:\n\n",
+      "user_prompt_suffix": "\n\nStep 1: Identify the symptom\nStep 2: Form hypotheses about the root cause\nStep 3: Test each hypothesis\nStep 4: Propose a fix with explanation",
+      "variables": {
+        "code": "The code with the bug",
+        "error": "The error message or unexpected behavior"
+      },
+      "tags": ["debugging", "programming", "analysis"],
+      "metadata": {
+        "recommended_models": ["gpt-4", "claude-3"],
+        "temperature": 0.1
+      }
+    }
+  ]
+}

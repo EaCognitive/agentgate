@@ -1,0 +1,455 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "latest"
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      tag: ${{ steps.get-version.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get-version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # Validate version format (v1.2.3)
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version format: $VERSION. Expected: v1.2.3"
+            exit 1
+          fi
+
+          echo "version=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+          echo "::notice::Release version: $VERSION"
+
+      - name: Validate version matches pyproject.toml
+        run: |
+          PYPROJECT_VERSION=$(grep -Po '^version = "\K[^"]+' pyproject.toml)
+          RELEASE_VERSION="${{ steps.get-version.outputs.version }}"
+
+          if [ "$PYPROJECT_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "::error::Version mismatch: pyproject.toml=$PYPROJECT_VERSION, tag=$RELEASE_VERSION"
+            exit 1
+          fi
+
+          echo "::notice::Version validated: $RELEASE_VERSION"
+
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: validate-release
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra all --extra enterprise --extra server
+
+      - name: Bootstrap runtime schema for release tests
+        run: uv run python scripts/bootstrap_ci_runtime.py
+
+      - name: Run tests
+        run: |
+          uv run pytest \
+            tests/ \
+            -q \
+            --tb=short \
+            -m "unit or not integration" \
+            --maxfail=1
+        env:
+          TESTING: "true"
+          AGENTGATE_ENV: test
+          AGENTGATE_RUNTIME_PROFILE: local_compat
+          AGENTGATE_PROFILE: local_compat
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify package
+        run: |
+          uv tool run --from twine twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+          retention-days: 30
+
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-and-test]
+    timeout-minutes: 30
+
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.validate-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.validate-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.validate-release.outputs.tag }}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=AgentGate
+            org.opencontainers.image.description=Production infrastructure for AI agent tool execution
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.version=${{ needs.validate-release.outputs.version }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ needs.validate-release.outputs.version }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 90
+
+  scan-docker:
+    name: Scan Docker Image
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-docker]
+    timeout-minutes: 15
+
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+      - name: Run Trivy with table output
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: 1
+
+  sign-artifacts:
+    name: Sign Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-and-test, build-docker]
+    timeout-minutes: 10
+
+    steps:
+      - name: Download Python package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign Docker image
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-docker.outputs.image-digest }}
+
+      - name: Sign Python packages
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          for file in dist/*; do
+            cosign sign-blob --yes "$file" --output-signature="${file}.sig"
+          done
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-artifacts
+          path: dist/*.sig
+          retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-and-test, build-docker, scan-docker, sign-artifacts]
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Python package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Download signatures
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-artifacts
+          path: dist/
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: .
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          VERSION="${{ needs.validate-release.outputs.tag }}"
+
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+
+          echo "## What's Changed" > release-notes.md
+          echo "" >> release-notes.md
+
+          if [ -n "$PREV_TAG" ]; then
+            git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges >> release-notes.md
+          else
+            git log --pretty=format:"- %s (%h)" --no-merges >> release-notes.md
+          fi
+
+          echo "" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Docker Image" >> release-notes.md
+          echo '```bash' >> release-notes.md
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}" >> release-notes.md
+          echo '```' >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Verification" >> release-notes.md
+          echo "All artifacts are signed with Sigstore Cosign." >> release-notes.md
+          echo "" >> release-notes.md
+          echo "Docker image digest: \`${{ needs.build-docker.outputs.image-digest }}\`" >> release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.validate-release.outputs.tag }}
+          name: Release ${{ needs.validate-release.outputs.tag }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          files: |
+            dist/*
+            sbom.spdx.json
+          generate_release_notes: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [validate-release, create-release]
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ea-agentgate
+
+    steps:
+      - name: Download Python package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish
+
+      - name: Verify PyPI publication
+        run: |
+          sleep 30  # Wait for PyPI to index
+          pip index versions ea-agentgate | grep "${{ needs.validate-release.outputs.version }}"
+
+  notify-slack:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, create-release, publish-pypi]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Send Slack notification
+        if: vars.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "AgentGate Release ${{ needs.validate-release.outputs.tag }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "AgentGate ${{ needs.validate-release.outputs.tag }} Released"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Status:* ${{ job.status }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:* ${{ needs.validate-release.outputs.tag }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*PyPI:* https://pypi.org/project/ea-agentgate/${{ needs.validate-release.outputs.version }}/"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Docker:* ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ vars.SLACK_WEBHOOK_URL }}
+
+  release-summary:
+    name: Release Summary
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-and-test, build-docker, scan-docker, create-release, publish-pypi]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate release summary
+        run: |
+          echo "# Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Version: ${{ needs.validate-release.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- Build and Test: ${{ needs.build-and-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build Docker: ${{ needs.build-docker.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Scan Docker: ${{ needs.scan-docker.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Create Release: ${{ needs.create-release.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Publish PyPI: ${{ needs.publish-pypi.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- PyPI: https://pypi.org/project/ea-agentgate/${{ needs.validate-release.outputs.version }}/" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-release.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.validate-release.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check release status
+        run: |
+          if [[ "${{ needs.build-and-test.result }}" != "success" ]] || \
+             [[ "${{ needs.build-docker.result }}" != "success" ]] || \
+             [[ "${{ needs.scan-docker.result }}" != "success" ]] || \
+             [[ "${{ needs.create-release.result }}" != "success" ]] || \
+             [[ "${{ needs.publish-pypi.result }}" != "success" ]]; then
+            echo "::error::Release pipeline failed"
+            exit 1
+          fi
+          echo "::notice::Release ${{ needs.validate-release.outputs.tag }} completed successfully"

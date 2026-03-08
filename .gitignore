@@ -1,0 +1,239 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+test_results/
+allure-results/
+allure-report/
+.allure-history/
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+.pdm-python
+.pdm-build/
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+server/.env
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# IDE settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project-specific
+*.jsonl
+audit_*.log
+codebase.txt
+code.txt
+
+# ruff
+.ruff_cache/
+
+# Node.js (dashboard)
+node_modules/
+.next/
+.turbo/
+out/
+*.tsbuildinfo
+
+# Dashboard environment
+dashboard/.env.local
+dashboard/.env.*.local
+
+# Database
+*.db
+*.sqlite
+
+# Docker
+.docker/
+.public_snapshot/
+
+# Secrets (never commit)
+*.pem
+*.key
+.secrets/
+secrets/
+secrets.yaml
+secrets.yml
+secrets.old/
+
+# Production environment
+.env.production
+.env.prod
+docker-compose.override.yml
+
+# Production data and backups
+data/
+backups/
+/var/backups/
+!tests/e2e/data/
+!tests/e2e/data/*.json
+
+# SSL certificates
+docker/nginx/ssl/*.pem
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.crt
+
+# Archive (dead scripts, artifacts)
+.archive/
+tests/artifacts/algorithm/formal_verification/history/
+tests/artifacts/workflow/
+tests/artifacts/reports/
+tests/artifacts/*.json
+
+# MCP config (generated per-developer by install script)
+.mcp.json
+
+# AgentGate CLI session
+.agentgate_session
+~/.agentgate/
+
+# Chaos verification run artifacts (large, regenerable)
+tests/artifacts/chaos_verification_run_*/
+tests/artifacts/chaos_latest
+tests/artifacts/chaos_latest_*
+tests/artifacts/chaos_verification_latest
+tests/artifacts/chaos_verification_latest_*
+tests/artifacts/algorithm/
+
+# Logs
+logs/
+*.log

@@ -1,0 +1,36 @@
+[MASTER]
+ignore=.venv,
+       .git,
+       node_modules,
+       __pycache__,
+       .pytest_cache,
+       allure-results,
+       allure-report,
+       .allure-history
+
+ignore-patterns=.*\.egg-info,
+                .*\.pyc,
+                .*_cache,
+                .*/site-packages/.*
+
+[REPORTS]
+output-format=text
+reports=yes
+score=yes
+
+[FORMAT]
+max-line-length=100
+
+[BASIC]
+good-names=i,j,k,e,f,db,id,_,app,pk,ttl
+
+[DESIGN]
+max-args=8
+max-attributes=10
+max-locals=20
+
+[SIMILARITIES]
+ignore-imports=yes
+ignore-docstrings=yes
+ignore-comments=yes
+min-similarity-lines=10

@@ -1,0 +1,13 @@
+# Playwright artifacts
+test-results/
+playwright-report/
+screenshots/
+videos/
+traces/
+
+# Authentication state (contains session tokens)
+.auth/
+
+# OS files
+.DS_Store
+Thumbs.db
