@@ -1,0 +1,82 @@
+[
+  {
+    "id": "allow_direct_read",
+    "action": "config:read",
+    "resource": "tenant/default/config/agent",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": true,
+      "direct_access": true,
+      "direct_permit": true,
+      "execution_phase": "confirm",
+      "preview_confirmed": true
+    }
+  },
+  {
+    "id": "deny_missing_mfa",
+    "action": "tools/call",
+    "resource": "tenant/default/tools/provision",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": true,
+      "direct_access": true,
+      "direct_permit": true,
+      "enforce_mfa_obligation": true,
+      "mfa_verified": false,
+      "execution_phase": "confirm",
+      "preview_confirmed": true
+    }
+  },
+  {
+    "id": "deny_unauthenticated",
+    "action": "config:update",
+    "resource": "tenant/default/policies/runtime",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": false,
+      "direct_access": false,
+      "direct_permit": true,
+      "execution_phase": "confirm",
+      "preview_confirmed": true
+    }
+  },
+  {
+    "id": "deny_missing_permit",
+    "action": "audit:read",
+    "resource": "tenant/default/audit/events",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": true,
+      "direct_access": true,
+      "direct_permit": false,
+      "execution_phase": "confirm",
+      "preview_confirmed": true
+    }
+  },
+  {
+    "id": "allow_tools_confirmed",
+    "action": "tools/call",
+    "resource": "tenant/default/tools/diagnostics",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": true,
+      "direct_access": true,
+      "direct_permit": true,
+      "execution_phase": "confirm",
+      "preview_confirmed": true
+    }
+  },
+  {
+    "id": "deny_preview_not_confirmed",
+    "action": "config:update",
+    "resource": "tenant/default/config/feature-flags",
+    "tenant_id": "default",
+    "runtime_context": {
+      "authenticated": true,
+      "direct_access": true,
+      "direct_permit": true,
+      "execution_phase": "preview",
+      "preview_confirmed": false
+    }
+  }
+]

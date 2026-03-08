@@ -1,0 +1,298 @@
+# Default values for AgentGate Helm Chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# AgentGate Server configuration
+server:
+  replicaCount: 3
+  minReplicas: 3
+  maxReplicas: 10
+
+  image:
+    repository: agentgate/server
+    pullPolicy: IfNotPresent
+    tag: "1.0.0"
+
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+  podLabels: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    annotations: {}
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  livenessProbe:
+    httpGet:
+      path: /health/liveness
+      port: 8000
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health/readiness
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # Environment variables
+  env:
+    AGENTGATE_ENV: production
+    AGENTGATE_RUNTIME_PROFILE: cloud_strict
+    DATABASE_AUTH_MODE: entra_token
+    AGENTGATE_Z3_MODE: enforce
+    AZURE_KEY_VAULT_URL: https://your-vault-name.vault.azure.net
+    LOG_LEVEL: info
+    LOG_FORMAT: json
+    ENABLE_METRICS: "true"
+    METRICS_PORT: "9090"
+    ENABLE_RATE_LIMITING: "true"
+    ENABLE_CORS: "true"
+    ENABLE_CSRF: "true"
+    DATABASE_POOL_SIZE: "20"
+    DATABASE_MAX_OVERFLOW: "40"
+    DATABASE_POOL_TIMEOUT: "30"
+    DATABASE_POOL_RECYCLE: "3600"
+    UVICORN_WORKERS: "4"
+    # Identity provider configuration
+    IDENTITY_PROVIDER_MODE: local
+    ALLOW_LOCAL_PASSWORD_AUTH: "false"
+    # Distributed health monitoring (optional)
+    AGENTGATE_DISTRIBUTED_HEALTH_MONITOR_ENABLED: "false"
+    # API key scope controls
+    API_KEY_WILDCARD_ROLES: "admin,security_admin"
+    MCP_PRIVILEGED_ROLES: "admin"
+
+  # Secrets - create these separately or use external-secrets operator
+  secrets:
+    secretKey: ""            # Set via kubectl or external-secrets
+    nextauthSecret: ""
+    hmacSecret: ""           # AGENTGATE_HMAC_SECRET for policy HMAC signing
+    decisionSigningKey: ""   # Base64-encoded 32-byte Ed25519 seed for certificate signing
+    honeySalt: ""            # Salt for honey token trap hash computation
+
+# Dashboard configuration
+dashboard:
+  enabled: true
+  replicaCount: 2
+  podLabels: {}
+
+  image:
+    repository: agentgate/dashboard
+    pullPolicy: IfNotPresent
+    tag: "1.0.0"
+
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+  env:
+    NODE_ENV: production
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: agentgate.example.com
+      paths:
+        - path: /api
+          pathType: Prefix
+          backend:
+            service:
+              name: agentgate-server
+              port: 8000
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: agentgate-dashboard
+              port: 3000
+  tls:
+    - secretName: agentgate-tls
+      hosts:
+        - agentgate.example.com
+
+# PostgreSQL configuration (Bitnami chart)
+postgresql:
+  enabled: false
+  auth:
+    username: agentgate  # Unused when externalDatabase.url is provided
+    password: ""  # Unused when externalDatabase.url is provided
+    database: agentgate  # Unused when externalDatabase.url is provided
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+    podSecurityContext:
+      enabled: true
+      fsGroup: 1001
+    containerSecurityContext:
+      enabled: true
+      runAsUser: 1001
+      runAsNonRoot: true
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+# Redis configuration (Bitnami chart)
+redis:
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: true
+    password: ""  # Set via values override or external-secrets
+  master:
+    persistence:
+      enabled: true
+      size: 8Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+# External managed data services for cloud_strict (Azure Marketplace baseline)
+externalDatabase:
+  # Passwordless Entra ID URL (no static password)
+  url: "postgresql+asyncpg://agentgate@your-postgres-host:5432/agentgate?sslmode=require"
+
+externalRedis:
+  url: "rediss://your-redis-host:6380/0"
+
+# Network Policies
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Init Containers (for migrations)
+initContainers:
+  migrations:
+    enabled: true
+    image:
+      repository: agentgate/server
+      tag: "1.0.0"
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head
+  guardrailsSync:
+    enabled: true
+    image:
+      repository: agentgate/server
+      tag: "1.0.0"
+    path: /etc/agentgate/guardrails
+    gitSha: ""
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        python -m server.mcp.guardrails_sync
+        --path "${GUARDRAILS_SYNC_PATH}"
+        --git-sha "${GIT_SHA}"
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Backup configuration
+backup:
+  enabled: false
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 30
+  storageClass: ""
+  size: 50Gi

@@ -1,0 +1,364 @@
+version: 1
+site:
+  title: AgentGate Documentation
+  base_path: /docs
+  api_reference_path: /docs/api-reference
+sections:
+- id: getting-started
+  title: Getting Started
+  order: 10
+  pages:
+  - id: overview
+    title: Overview
+    slug: getting-started/overview
+    path: docs/overview.md
+    status: stable
+    aliases:
+    - index
+    - overview
+  - id: repository-readme
+    title: Repository Readme
+    slug: getting-started/repository-readme
+    path: README.md
+    status: stable
+    aliases: []
+  - id: demo-guide
+    title: Demo Guide
+    slug: getting-started/demo-guide
+    path: docs/demo-guide.md
+    status: stable
+    aliases: []
+  - id: publishing-guide
+    title: Publishing Guide
+    slug: getting-started/publishing-guide
+    path: docs/publishing-guide.md
+    status: stable
+    aliases: []
+  - id: code-of-conduct
+    title: Code of Conduct
+    slug: getting-started/code-of-conduct
+    path: docs/code-of-conduct.md
+    status: stable
+    aliases: []
+- id: architecture
+  title: Architecture
+  order: 20
+  pages:
+  - id: system-architecture
+    title: System Architecture
+    slug: architecture/system
+    path: docs/architecture.md
+    status: stable
+    aliases: []
+  - id: dashboard-production-plan
+    title: Dashboard Production Plan
+    slug: architecture/dashboard-production-plan
+    path: docs/dashboard-production-plan.md
+    status: stable
+    aliases: []
+  - id: phase4-implementation
+    title: Phase 4 Implementation
+    slug: architecture/phase4-implementation
+    path: docs/phase4-implementation.md
+    status: reference
+    aliases: []
+- id: security
+  title: Security
+  order: 30
+  pages:
+  - id: security-model
+    title: Security Model
+    slug: security/model
+    path: docs/security.md
+    status: stable
+    aliases: []
+  - id: security-setup
+    title: Security Setup Guide
+    slug: security/setup-guide
+    path: docs/security-setup-guide.md
+    status: stable
+    aliases: []
+  - id: compliance-edge-cases
+    title: Compliance Edge Cases
+    slug: security/compliance-edge-cases
+    path: docs/compliance-edge-cases.md
+    status: stable
+    aliases: []
+  - id: tls-setup
+    title: TLS Setup
+    slug: security/tls-setup
+    path: docs/tls-setup.md
+    status: stable
+    aliases: []
+  - id: pii-encryption-flow
+    title: PII Encryption Flow
+    slug: security/pii-encryption-flow
+    path: docs/pii-encryption-flow.md
+    status: stable
+    aliases: []
+  - id: mfa-setup
+    title: MFA Setup Guide
+    slug: security/mfa-setup
+    path: docs/mfa-setup-guide.md
+    status: stable
+    aliases: []
+  - id: passkey-guide
+    title: Passkey Guide
+    slug: security/passkey-guide
+    path: docs/passkey-guide.md
+    status: stable
+    aliases: []
+  - id: error-handling
+    title: Error Handling
+    slug: security/error-handling
+    path: docs/error-handling.md
+    status: stable
+    aliases: []
+  - id: identity-provider-modes
+    title: Identity Provider Modes
+    slug: security/identity-provider-modes
+    path: docs/identity-provider-modes.md
+    status: stable
+    aliases: []
+  - id: descope-credential-governance
+    title: Descope Credential Governance
+    slug: security/descope-credential-governance
+    path: docs/descope-credential-governance.md
+    status: stable
+    aliases: []
+- id: prompting
+  title: Prompting
+  order: 40
+  pages:
+  - id: prompt-guard
+    title: Prompt Guard
+    slug: prompting/prompt-guard
+    path: docs/prompt-guard.md
+    status: stable
+    aliases: []
+  - id: prompt-engineering
+    title: Prompt Engineering Implementation
+    slug: prompting/prompt-engineering-implementation
+    path: docs/prompt-engineering-implementation.md
+    status: stable
+    aliases: []
+  - id: playground-guide
+    title: Playground Guide
+    slug: prompting/playground-guide
+    path: docs/playground-guide.md
+    status: stable
+    aliases: []
+  - id: resilience-features
+    title: Resilience Features
+    slug: prompting/resilience-features
+    path: docs/resilience-features.md
+    status: stable
+    aliases: []
+  - id: jinja2-templating
+    title: Jinja2 Templating
+    slug: prompting/jinja2-templating
+    path: docs/jinja2-templating.md
+    status: reference
+    aliases: []
+- id: datasets
+  title: Datasets
+  order: 50
+  pages:
+  - id: security-datasets
+    title: Security Datasets
+    slug: datasets/security-datasets
+    path: docs/security-datasets.md
+    status: stable
+    aliases: []
+  - id: dataset-finetuning
+    title: Dataset Fine-Tuning Guide
+    slug: datasets/fine-tuning-guide
+    path: docs/dataset-finetuning-guide.md
+    status: stable
+    aliases: []
+- id: mcp
+  title: MCP
+  order: 60
+  pages:
+  - id: mcp-server
+    title: MCP Server Guide
+    slug: mcp/server-guide
+    path: docs/mcp-server.md
+    status: stable
+    aliases: []
+  - id: mcp-security-model
+    title: MCP Security Model
+    slug: mcp/security-model
+    path: docs/mcp-security-model.md
+    status: stable
+    aliases: []
+  - id: mcp-ground-truth-schema
+    title: MCP Ground-Truth Schema
+    slug: mcp/ground-truth-schema
+    path: docs/mcp-ground-truth-schema.md
+    status: stable
+    aliases: []
+  - id: mcp-comprehensive
+    title: MCP Comprehensive Guide
+    slug: mcp/comprehensive-guide
+    path: docs/mcp-comprehensive-guide.md
+    status: stable
+    aliases: []
+  - id: mcp-gold-standard
+    title: MCP Gold Standard
+    slug: mcp/gold-standard
+    path: docs/mcp-gold-standard.md
+    status: stable
+    aliases: []
+  - id: mcp-admin-api-access
+    title: MCP Admin API Access
+    slug: mcp/admin-api-access
+    path: docs/mcp-admin-api-access.md
+    status: stable
+    aliases: []
+- id: formal-verification
+  title: Formal Verification
+  order: 65
+  pages:
+  - id: policy-as-code
+    title: Policy as Code
+    slug: formal/policy-as-code
+    path: docs/policy-as-code.md
+    status: stable
+    aliases: []
+  - id: proof-kernel
+    title: Cryptographic Proof Kernel
+    slug: formal/cryptographic-proof-kernel
+    path: docs/cryptographic-proof-kernel.md
+    status: stable
+    aliases: []
+  - id: formal-audit
+    title: Formal Verification Audit
+    slug: formal/audit
+    path: docs/formal-verification-audit.md
+    status: stable
+    aliases: []
+  - id: runtime-enforcement-sdk-alignment
+    title: Runtime Enforcement and SDK Alignment
+    slug: formal/runtime-enforcement-sdk-alignment
+    path: docs/runtime-enforcement-and-sdk-alignment.md
+    status: stable
+    aliases: []
+- id: operations
+  title: Operations
+  order: 70
+  pages:
+  - id: command-reference
+    title: Command Reference
+    slug: operations/command-reference
+    path: docs/command-reference.md
+    status: stable
+    aliases: []
+  - id: formal-artifact-scrubbing
+    title: Formal Artifact Scrubbing
+    slug: operations/formal-artifact-scrubbing
+    path: docs/formal-artifact-scrubbing.md
+    status: stable
+    aliases: []
+  - id: docker-deployment
+    title: Docker Deployment
+    slug: operations/docker-deployment
+    path: docs/docker-deployment.md
+    status: stable
+    aliases: []
+  - id: descope-migration-runbook
+    title: Descope Migration Runbook
+    slug: operations/descope-migration-runbook
+    path: docs/descope-migration-runbook.md
+    status: stable
+    aliases: []
+  - id: docker-readme
+    title: Docker Runtime Notes
+    slug: operations/docker-runtime-notes
+    path: docker/README.md
+    status: reference
+    aliases: []
+  - id: deploy-readme
+    title: Deploy Overview
+    slug: operations/deploy-overview
+    path: deploy/README.md
+    status: reference
+    aliases: []
+  - id: helm-readme
+    title: Helm Chart Guide
+    slug: operations/helm-chart-guide
+    path: deploy/helm/agentgate/README.md
+    status: reference
+    aliases: []
+  - id: alembic-readme
+    title: Alembic Migration Notes
+    slug: operations/alembic-migrations
+    path: alembic/README.md
+    status: reference
+    aliases: []
+- id: testing
+  title: Testing
+  order: 75
+  pages:
+  - id: tests-readme
+    title: Test Suite Readme
+    slug: testing/test-suite-readme
+    path: tests/README.md
+    status: reference
+    aliases: []
+  - id: tests-integration-readme
+    title: Integration Tests Readme
+    slug: testing/integration-tests-readme
+    path: tests/integration/README.md
+    status: reference
+    aliases: []
+  - id: tests-artifacts-readme
+    title: Test Artifacts Readme
+    slug: testing/test-artifacts-readme
+    path: tests/artifacts/README.md
+    status: reference
+    aliases: []
+- id: reference
+  title: Reference
+  order: 78
+  pages:
+  - id: contributing-root
+    title: Contributing
+    slug: reference/contributing
+    path: CONTRIBUTING.md
+    status: reference
+    aliases: []
+  - id: changelog-root
+    title: Changelog
+    slug: reference/changelog
+    path: CHANGELOG.md
+    status: reference
+    aliases: []
+  - id: docs-assets
+    title: Docs Assets
+    slug: reference/docs-assets
+    path: docs/assets/README.md
+    status: reference
+    aliases: []
+  - id: openai-example-readme
+    title: OpenAI Example
+    slug: reference/openai-example
+    path: ea_agentgate/examples/openai/README.md
+    status: reference
+    aliases: []
+  - id: jinja2-quickstart-prompt
+    title: Jinja2 Prompt Quickstart
+    slug: reference/jinja2-prompt-quickstart
+    path: ea_agentgate/prompts/JINJA2_QUICKSTART.md
+    status: reference
+    aliases: []
+- id: api
+  title: API
+  order: 80
+  pages:
+  - id: api-reference
+    title: API Reference (Scalar)
+    slug: api/reference
+    external_url: /docs/api-reference
+    status: stable
+    aliases: []

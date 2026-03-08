@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# pre-commit hook: block commits that contain API keys or secrets.
+#
+# Scans only staged content (not the working tree) so it catches exactly
+# what would be committed.  Exits non-zero on the first match.
+#
+# Uses POSIX ERE (grep -E) for macOS + Linux compatibility.
+
+set -euo pipefail
+
+# Each entry is  LABEL:REGEX  (split on the first colon).
+# All patterns use extended regex (ERE), no PCRE.
+PATTERNS=(
+    "AWS Access Key:AKIA[0-9A-Z]{16}"
+    "OpenAI API Key:sk-[A-Za-z0-9_\-]{20,}"
+    "Anthropic API Key:sk-ant-[A-Za-z0-9_\-]{20,}"
+    "Google API Key:AIzaSy[A-Za-z0-9_\-]{33}"
+    "GitHub Token:gh[pousr]_[A-Za-z0-9_]{36,}"
+    "Private Key Block:-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+    "Slack Token:xox[bpars]-[A-Za-z0-9\-]{10,}"
+    "Stripe Key:sk_live_[A-Za-z0-9]{24,}"
+    "Twilio Key:SK[a-f0-9]{32}"
+    "SendGrid Key:SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}"
+    "HuggingFace Token:hf_[A-Za-z0-9]{34}"
+    "Generic Secret Assignment:(api_key|apikey|secret_key|auth_token|access_token)[[:space:]]*[=:][[:space:]]*['\"]?[A-Za-z0-9/+=_\-]{32,}"
+    "AWS Secret Key:aws_secret_access_key[[:space:]]*=[[:space:]]*['\"]?[A-Za-z0-9/+=]{40}"
+)
+
+# Paths to always ignore (test fixtures, examples, lock files).
+EXCLUDE='(\.(lock|archive)(/|$)|fixtures/|__snapshots__/|\.env\..*example)'
+
+STAGED_DIFF=$(git diff --cached --diff-filter=ACM -U0 -- . \
+    | grep -E '^\+[^+]' || true)
+
+if [ -z "$STAGED_DIFF" ]; then
+    exit 0
+fi
+
+FOUND=0
+
+for entry in "${PATTERNS[@]}"; do
+    LABEL="${entry%%:*}"
+    REGEX="${entry#*:}"
+
+    MATCHES=$(echo "$STAGED_DIFF" \
+        | grep -Ev "$EXCLUDE" \
+        | grep -E -e "$REGEX" || true)
+
+    if [ -n "$MATCHES" ]; then
+        if [ "$FOUND" -eq 0 ]; then
+            echo ""
+            echo "ERROR: Potential secrets detected in staged changes."
+            echo "-------------------------------------------------------"
+        fi
+        FOUND=1
+        echo ""
+        echo "  [$LABEL]"
+        echo "$MATCHES" | head -5 | sed 's/^/    /'
+        MATCH_COUNT=$(echo "$MATCHES" | wc -l | tr -d ' ')
+        if [ "$MATCH_COUNT" -gt 5 ]; then
+            echo "    ... and $((MATCH_COUNT - 5)) more"
+        fi
+    fi
+done
+
+if [ "$FOUND" -ne 0 ]; then
+    echo ""
+    echo "-------------------------------------------------------"
+    echo "Commit blocked. Remove secrets before committing."
+    echo ""
+    echo "If this is a false positive, commit with:"
+    echo "  git commit --no-verify"
+    echo ""
+    exit 1
+fi
+
+exit 0

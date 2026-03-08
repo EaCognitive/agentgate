@@ -1,0 +1,131 @@
+version: 1
+description: Traceable mapping of moved markdown files during docs binder consolidation.
+entries:
+- old_path: docs/ARCHITECTURE.md
+  new_path: docs/architecture.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/CODE_OF_CONDUCT.md
+  new_path: docs/code-of-conduct.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/COMPLIANCE_EDGE_CASES.md
+  new_path: docs/compliance-edge-cases.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/CRYPTOGRAPHIC_PROOF_KERNEL.md
+  new_path: docs/cryptographic-proof-kernel.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/DASHBOARD_PRODUCTION_PLAN.md
+  new_path: docs/dashboard-production-plan.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/DATASET_FINETUNING_GUIDE.md
+  new_path: docs/dataset-finetuning-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/DEMO_GUIDE.md
+  new_path: docs/demo-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/DOCKER_DEPLOYMENT.md
+  new_path: docs/docker-deployment.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/ERROR_HANDLING.md
+  new_path: docs/error-handling.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/FORMAL_VERIFICATION_AUDIT.md
+  new_path: docs/formal-verification-audit.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/JINJA2_TEMPLATING.md
+  new_path: docs/jinja2-templating.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/MCP_COMPREHENSIVE_GUIDE.md
+  new_path: docs/mcp-comprehensive-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/MCP_GOLD_STANDARD.md
+  new_path: docs/mcp-gold-standard.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/MCP_SERVER.md
+  new_path: docs/mcp-server.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/MFA_SETUP_GUIDE.md
+  new_path: docs/mfa-setup-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/OVERVIEW.md
+  new_path: docs/overview.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PASSKEY_GUIDE.md
+  new_path: docs/passkey-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PHASE4_IMPLEMENTATION.md
+  new_path: docs/phase4-implementation.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PII_ENCRYPTION_FLOW.md
+  new_path: docs/pii-encryption-flow.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PLAYGROUND_GUIDE.md
+  new_path: docs/playground-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/POLICY_AS_CODE.md
+  new_path: docs/policy-as-code.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PROMPT_ENGINEERING_IMPLEMENTATION.md
+  new_path: docs/prompt-engineering-implementation.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PROMPT_GUARD.md
+  new_path: docs/prompt-guard.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/PUBLISHING_GUIDE.md
+  new_path: docs/publishing-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/RESILIENCE_FEATURES.md
+  new_path: docs/resilience-features.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/SECURITY.md
+  new_path: docs/security.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/SECURITY_DATASETS.md
+  new_path: docs/security-datasets.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/SECURITY_SETUP_GUIDE.md
+  new_path: docs/security-setup-guide.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/TLS_SETUP.md
+  new_path: docs/tls-setup.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/COMMAND_REFERENCE.md
+  new_path: docs/command-reference.md
+  action: moved
+  notes: Normalized filename to lowercase-kebab-case.
+- old_path: docs/mcp-security-model.md
+  new_path: docs/mcp-security-model.md
+  action: added
+  notes: Added MCP runtime enforcement sequence documentation.
+- old_path: docs/mcp-ground-truth-schema.md
+  new_path: docs/mcp-ground-truth-schema.md
+  action: added
+  notes: Added ground-truth MCP async schema and envelope contract.

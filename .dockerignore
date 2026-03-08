@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+dist
+build
+.venv
+venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg
+
+# Node (dashboard has its own)
+node_modules
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+
+# Docs
+*.md
+!README.md
+
+# Tests
+tests/
+htmlcov/
+.coverage
+
+# Local env
+.env
+.env.local
+*.db

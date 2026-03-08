@@ -1,0 +1,294 @@
+{
+  "command": "demo",
+  "compose_containers": [
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "ca8751f7cf78",
+      "Image": "agentgate-dashboard",
+      "Labels": "com.docker.compose.config-hash=302baf3282ec23f2f9c0b6609c15bb608ef00e7b4bb9fc0d20f8cdf5c8a35590,com.docker.compose.service=dashboard,com.docker.compose.container-number=1,com.docker.compose.image=sha256:683cc7678a38be4e840e96b3d3a8a747a8178f7258dd39265937f44a2a5ae749,com.docker.compose.oneoff=False,com.docker.compose.project=agentgate,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,desktop.docker.io/binds/0/SourceKind=hostFile,com.docker.compose.version=5.0.2,desktop.docker.io/binds/0/Source=/Users/macbook/Desktop/agentgate/dashboard,desktop.docker.io/binds/0/Target=/app,desktop.docker.io/ports/3000/tcp=:3000,desktop.docker.io/ports.scheme=v2,com.docker.compose.depends_on=server:service_started:false",
+      "LocalVolumes": "1",
+      "Mounts": "/host_mnt/User\u2026,agentgate_dash\u2026",
+      "Name": "agentgate-dashboard-1",
+      "Names": "agentgate-dashboard-1",
+      "Networks": "agentgate_default",
+      "Ports": "0.0.0.0:3000->3000/tcp, [::]:3000->3000/tcp",
+      "Project": "agentgate",
+      "Publishers": [
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 3000,
+          "TargetPort": 3000,
+          "URL": "0.0.0.0"
+        },
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 3000,
+          "TargetPort": 3000,
+          "URL": "::"
+        }
+      ],
+      "RunningFor": "31 seconds ago",
+      "Service": "dashboard",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 24 seconds (healthy)"
+    },
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "307a5e2e0049",
+      "Image": "postgres:16-bookworm",
+      "Labels": "com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.version=5.0.2,desktop.docker.io/ports.scheme=v2,com.docker.compose.depends_on=,com.docker.compose.image=sha256:a1261333fd460ba82348f86eb053c5fc8cc6c702e9c008e661a934081bc73715,com.docker.compose.project=agentgate,com.docker.compose.service=db,com.docker.compose.config-hash=aceb691bfeefdad4fa6cf1946e15f43049354a381c18d4c8757ff90f97b4f808,com.docker.compose.container-number=1,com.docker.compose.oneoff=False",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_post\u2026",
+      "Name": "agentgate-db-1",
+      "Names": "agentgate-db-1",
+      "Networks": "agentgate_default",
+      "Ports": "5432/tcp",
+      "Project": "agentgate",
+      "Publishers": [
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 0,
+          "TargetPort": 5432,
+          "URL": ""
+        }
+      ],
+      "RunningFor": "31 seconds ago",
+      "Service": "db",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 30 seconds (healthy)"
+    },
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "d1fad41ec12e",
+      "Image": "redis:7-alpine",
+      "Labels": "com.docker.compose.config-hash=7b8248f20d86ea239b4be31155c77089a660b3f97926fafeee5120f05772bfe8,com.docker.compose.depends_on=,com.docker.compose.oneoff=False,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,com.docker.compose.container-number=1,com.docker.compose.image=sha256:67d49cdb6df6f3fb9787ff1741d54d2d2ad48ab5cc73453d83b593731f860656,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.service=redis,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/6379/tcp=:6379",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_redi\u2026",
+      "Name": "agentgate-redis-1",
+      "Names": "agentgate-redis-1",
+      "Networks": "agentgate_default",
+      "Ports": "0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp",
+      "Project": "agentgate",
+      "Publishers": [
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 6379,
+          "TargetPort": 6379,
+          "URL": "0.0.0.0"
+        },
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 6379,
+          "TargetPort": 6379,
+          "URL": "::"
+        }
+      ],
+      "RunningFor": "31 seconds ago",
+      "Service": "redis",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 30 seconds (healthy)"
+    },
+    {
+      "Command": "\"uvicorn server.main\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ExitCode": 0,
+      "Health": "healthy",
+      "ID": "659f24b8959f",
+      "Image": "agentgate-server",
+      "Labels": "desktop.docker.io/ports.scheme=v2,com.docker.compose.depends_on=db:service_healthy:false,redis:service_healthy:false,com.docker.compose.image=sha256:cee6447e283b6cdd2e582fe4e137fb0d87345aae0aa936fff418eef81e5196de,com.docker.compose.oneoff=False,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,desktop.docker.io/ports/8000/tcp=:8000,com.docker.compose.config-hash=5b3f0f9816c704bb1cba85cf0d776d24366b961e7c07e9c533a1746318e9d475,com.docker.compose.container-number=1,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.service=server",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_serv\u2026",
+      "Name": "agentgate-server-1",
+      "Names": "agentgate-server-1",
+      "Networks": "agentgate_default",
+      "Ports": "0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp",
+      "Project": "agentgate",
+      "Publishers": [
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 8000,
+          "TargetPort": 8000,
+          "URL": "0.0.0.0"
+        },
+        {
+          "Protocol": "tcp",
+          "PublishedPort": 8000,
+          "TargetPort": 8000,
+          "URL": "::"
+        }
+      ],
+      "RunningFor": "31 seconds ago",
+      "Service": "server",
+      "Size": "0B",
+      "State": "running",
+      "Status": "Up 24 seconds (healthy)"
+    }
+  ],
+  "cwd": "/Users/macbook/Desktop/agentgate",
+  "event_id": "4e541683-0cac-4ae9-aa8e-3a15a60a121a",
+  "note": "api and dashboard healthy",
+  "phase": "healthy",
+  "project_name": "agentgate",
+  "project_volumes": [
+    {
+      "Availability": "N/A",
+      "Driver": "local",
+      "Group": "N/A",
+      "Labels": "com.docker.compose.config-hash=18bb9f6136299a060247d83e13a848fa0e70bee54a8698696626a694f72a295f,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,com.docker.compose.volume=dashboard_node_modules",
+      "Links": "N/A",
+      "Mountpoint": "/var/lib/docker/volumes/agentgate_dashboard_node_modules/_data",
+      "Name": "agentgate_dashboard_node_modules",
+      "Scope": "local",
+      "Size": "N/A",
+      "Status": "N/A"
+    },
+    {
+      "Availability": "N/A",
+      "Driver": "local",
+      "Group": "N/A",
+      "Labels": "com.docker.compose.config-hash=b4ffa40825d52a2f593ab0493ef3210f05b6d05967e76828d95c3f8a07a47e7e,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,com.docker.compose.volume=postgres_data",
+      "Links": "N/A",
+      "Mountpoint": "/var/lib/docker/volumes/agentgate_postgres_data/_data",
+      "Name": "agentgate_postgres_data",
+      "Scope": "local",
+      "Size": "N/A",
+      "Status": "N/A"
+    },
+    {
+      "Availability": "N/A",
+      "Driver": "local",
+      "Group": "N/A",
+      "Labels": "com.docker.compose.config-hash=48daaa80cfbcbd56b50ff97204aa5776e27d5064c8f1022f9bab189fd4c7f7a5,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,com.docker.compose.volume=redis_data",
+      "Links": "N/A",
+      "Mountpoint": "/var/lib/docker/volumes/agentgate_redis_data/_data",
+      "Name": "agentgate_redis_data",
+      "Scope": "local",
+      "Size": "N/A",
+      "Status": "N/A"
+    },
+    {
+      "Availability": "N/A",
+      "Driver": "local",
+      "Group": "N/A",
+      "Labels": "com.docker.compose.config-hash=b80e42deded2d5a7ef37424eea3da1cbd8eb8c1fe662bc9b838f1122878f4344,com.docker.compose.project=agentgate,com.docker.compose.version=5.0.2,com.docker.compose.volume=server_state",
+      "Links": "N/A",
+      "Mountpoint": "/var/lib/docker/volumes/agentgate_server_state/_data",
+      "Name": "agentgate_server_state",
+      "Scope": "local",
+      "Size": "N/A",
+      "Status": "N/A"
+    }
+  ],
+  "run_id": "20260306T015312Z-1998",
+  "runtime_containers": [
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ID": "ca8751f7cf78",
+      "Image": "agentgate-dashboard",
+      "Labels": "com.docker.compose.config-hash=302baf3282ec23f2f9c0b6609c15bb608ef00e7b4bb9fc0d20f8cdf5c8a35590,com.docker.compose.container-number=1,com.docker.compose.depends_on=server:service_started:false,com.docker.compose.image=sha256:683cc7678a38be4e840e96b3d3a8a747a8178f7258dd39265937f44a2a5ae749,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.project=agentgate,com.docker.compose.service=dashboard,com.docker.compose.version=5.0.2,desktop.docker.io/binds/0/Source=/Users/macbook/Desktop/agentgate/dashboard,desktop.docker.io/binds/0/SourceKind=hostFile,desktop.docker.io/binds/0/Target=/app,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/3000/tcp=:3000",
+      "LocalVolumes": "1",
+      "Mounts": "/host_mnt/User\u2026,agentgate_dash\u2026",
+      "Names": "agentgate-dashboard-1",
+      "Networks": "agentgate_default",
+      "Platform": null,
+      "Ports": "0.0.0.0:3000->3000/tcp, [::]:3000->3000/tcp",
+      "RunningFor": "31 seconds ago",
+      "Size": "609B (virtual 925MB)",
+      "State": "running",
+      "Status": "Up 24 seconds (healthy)"
+    },
+    {
+      "Command": "\"uvicorn server.main\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ID": "659f24b8959f",
+      "Image": "agentgate-server",
+      "Labels": "com.docker.compose.config-hash=5b3f0f9816c704bb1cba85cf0d776d24366b961e7c07e9c533a1746318e9d475,com.docker.compose.container-number=1,com.docker.compose.depends_on=db:service_healthy:false,redis:service_healthy:false,com.docker.compose.image=sha256:cee6447e283b6cdd2e582fe4e137fb0d87345aae0aa936fff418eef81e5196de,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.project=agentgate,com.docker.compose.service=server,com.docker.compose.version=5.0.2,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/8000/tcp=:8000",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_serv\u2026",
+      "Names": "agentgate-server-1",
+      "Networks": "agentgate_default",
+      "Platform": null,
+      "Ports": "0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp",
+      "RunningFor": "31 seconds ago",
+      "Size": "0B (virtual 1.2GB)",
+      "State": "running",
+      "Status": "Up 24 seconds (healthy)"
+    },
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ID": "d1fad41ec12e",
+      "Image": "redis:7-alpine",
+      "Labels": "com.docker.compose.config-hash=7b8248f20d86ea239b4be31155c77089a660b3f97926fafeee5120f05772bfe8,com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:67d49cdb6df6f3fb9787ff1741d54d2d2ad48ab5cc73453d83b593731f860656,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.project=agentgate,com.docker.compose.service=redis,com.docker.compose.version=5.0.2,desktop.docker.io/ports.scheme=v2,desktop.docker.io/ports/6379/tcp=:6379",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_redi\u2026",
+      "Names": "agentgate-redis-1",
+      "Networks": "agentgate_default",
+      "Platform": null,
+      "Ports": "0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp",
+      "RunningFor": "31 seconds ago",
+      "Size": "0B (virtual 41.8MB)",
+      "State": "running",
+      "Status": "Up 30 seconds (healthy)"
+    },
+    {
+      "Command": "\"docker-entrypoint.s\u2026\"",
+      "CreatedAt": "2026-03-05 20:54:27 -0500 EST",
+      "ID": "307a5e2e0049",
+      "Image": "postgres:16-bookworm",
+      "Labels": "com.docker.compose.config-hash=aceb691bfeefdad4fa6cf1946e15f43049354a381c18d4c8757ff90f97b4f808,com.docker.compose.container-number=1,com.docker.compose.depends_on=,com.docker.compose.image=sha256:a1261333fd460ba82348f86eb053c5fc8cc6c702e9c008e661a934081bc73715,com.docker.compose.oneoff=False,com.docker.compose.project.config_files=/Users/macbook/Desktop/agentgate/docker-compose.yml,com.docker.compose.project.working_dir=/Users/macbook/Desktop/agentgate,com.docker.compose.project=agentgate,com.docker.compose.service=db,com.docker.compose.version=5.0.2,desktop.docker.io/ports.scheme=v2",
+      "LocalVolumes": "1",
+      "Mounts": "agentgate_post\u2026",
+      "Names": "agentgate-db-1",
+      "Networks": "agentgate_default",
+      "Platform": null,
+      "Ports": "5432/tcp",
+      "RunningFor": "31 seconds ago",
+      "Size": "0B (virtual 456MB)",
+      "State": "running",
+      "Status": "Up 30 seconds (healthy)"
+    },
+    {
+      "Command": "\"buildkitd --allow-i\u2026\"",
+      "CreatedAt": "2026-02-27 01:55:33 -0500 EST",
+      "ID": "aa1f73235048",
+      "Image": "moby/buildkit:buildx-stable-1",
+      "Labels": "desktop.docker.io/ports.scheme=v2",
+      "LocalVolumes": "1",
+      "Mounts": "buildx_buildki\u2026",
+      "Names": "buildx_buildkit_lexai-builder0",
+      "Networks": "bridge",
+      "Platform": null,
+      "Ports": "",
+      "RunningFor": "6 days ago",
+      "Size": "0B (virtual 231MB)",
+      "State": "running",
+      "Status": "Up 34 hours"
+    }
+  ],
+  "summary": {
+    "compose_container_count": 4,
+    "health": {
+      "healthy": 4,
+      "starting": 0,
+      "unhealthy": 0,
+      "unknown": 0
+    },
+    "project_volume_count": 4,
+    "runtime_container_count": 5
+  },
+  "timestamp_utc": "2026-03-06T01:54:58.234339+00:00"
+}

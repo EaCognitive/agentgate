@@ -1,0 +1,60 @@
+{
+  "name": "agentgate-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0",
+    "test": "playwright test --config=e2e/playwright.smoke.config.ts",
+    "test:smoke": "playwright test --config=e2e/playwright.smoke.config.ts",
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
+    "test:e2e:legacy": "playwright test --config=e2e/playwright.config.ts",
+    "test:e2e:ui": "playwright test --config=e2e/playwright.config.ts --ui",
+    "test:e2e:headed": "playwright test --config=e2e/playwright.config.ts --headed",
+    "test:e2e:debug": "playwright test --config=e2e/playwright.config.ts --debug",
+    "test:e2e:report": "playwright show-report e2e/playwright-report",
+    "test:e2e:chromium": "playwright test --config=e2e/playwright.config.ts --project=chromium",
+    "test:e2e:auth": "playwright test --config=e2e/playwright.config.ts --project=auth-tests",
+    "prebuild": "node scripts/build-docs-bundle.mjs",
+    "docs:bundle": "node scripts/build-docs-bundle.mjs"
+  },
+  "dependencies": {
+    "@scalar/api-reference-react": "^0.8.57",
+    "@tanstack/react-query": "5.64.2",
+    "@types/js-yaml": "^4.0.9",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "date-fns": "4.1.0",
+    "js-yaml": "^4.1.1",
+    "lucide-react": "0.469.0",
+    "mermaid": "^11.12.3",
+    "next": "^16.1.6",
+    "next-auth": "^4.24.13",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "recharts": "2.15.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "2.6.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.0",
+    "@types/node": "22.10.7",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "autoprefixer": "10.4.20",
+    "eslint": "^9.39.2",
+    "eslint-config-next": "^16.1.6",
+    "playwright": "^1.58.0",
+    "postcss": "8.5.1",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.7.3"
+  },
+  "overrides": {
+    "glob": "^11.0.0",
+    "rimraf": "^6.0.0"
+  }
+}

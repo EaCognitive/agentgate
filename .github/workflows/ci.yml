@@ -1,0 +1,592 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION_MIN: "3.13"
+  PYTHON_VERSION_MAX: "3.13"
+  UV_VERSION: "latest"
+
+jobs:
+  quality-gates:
+    name: Quality Gates (Makefile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TESTING: "true"
+      AGENTGATE_ENV: test
+      AGENTGATE_RUNTIME_PROFILE: local_compat
+      AGENTGATE_PROFILE: local_compat
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra server
+
+      - name: Run docs governance checks
+        run: uv run make docs-check
+
+      - name: Run make lint
+        run: uv run make lint
+        if: github.event_name != 'push'
+
+      - name: Run make typecheck
+        run: uv run make typecheck
+        if: github.event_name != 'push'
+
+      - name: Run make test
+        run: uv run make test
+        if: github.event_name != 'push'
+
+  mcp-protocol-gate:
+    name: MCP Protocol Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra server
+
+      - name: Bootstrap runtime schema for MCP tests
+        run: uv run python scripts/bootstrap_ci_runtime.py
+
+      - name: Run MCP protocol and contract tests
+        run: |
+          uv run pytest tests/mcp_policy -q --maxfail=1
+
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra all --extra enterprise --extra async --extra server --no-install-project
+          uv pip install ".[all,enterprise,async,server]"
+
+      - name: Run ruff linting
+        run: |
+          echo "::group::Ruff Check"
+          uv run ruff check ea_agentgate --output-format=github
+          echo "::endgroup::"
+
+      - name: Run ruff format check
+        run: |
+          echo "::group::Ruff Format"
+          uv run ruff format --check ea_agentgate
+          echo "::endgroup::"
+
+      - name: Run naming governance check
+        run: uv run python scripts/check_naming_conventions.py
+
+      - name: Run pyright type checking
+        run: |
+          echo "::group::Pyright Type Check"
+          uv run npx -y pyright ea_agentgate
+          echo "::endgroup::"
+        continue-on-error: true
+
+      - name: Run mypy type checking
+        run: |
+          echo "::group::MyPy Type Check"
+          uv run mypy ea_agentgate --ignore-missing-imports --no-error-summary
+          echo "::endgroup::"
+        continue-on-error: true
+
+  test:
+    name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra all --extra enterprise --extra async
+
+      - name: Bootstrap runtime schema for CI
+        run: uv run python scripts/bootstrap_ci_runtime.py
+
+      - name: Run unit tests
+        run: >
+          uv run pytest tests/ -q --tb=short -m "unit or not integration"
+          --cov=ea_agentgate --cov-report=xml --cov-report=term-missing
+          --junitxml=test-results-${{ matrix.os }}-${{ matrix.python-version }}.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TESTING: "true"
+          AGENTGATE_ENV: test
+          AGENTGATE_RUNTIME_PROFILE: local_compat
+          AGENTGATE_PROFILE: local_compat
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+          path: test-results-*.xml
+          retention-days: 30
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-${{ matrix.os }}-${{ matrix.python-version }}
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: coverage-report
+          path: .
+
+      - name: Display coverage summary
+        run: |
+          if [[ ! -f coverage.xml ]]; then
+            echo "Coverage artifact unavailable for this run." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          echo "## Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat coverage.xml | grep -oP 'line-rate="\K[^"]+' | head -1 | awk '{printf "Line Coverage: %.2f%%\n", $1*100}' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: lint
+    if: github.event_name != 'push'
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra all --extra enterprise --extra async
+
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/ \
+            -v \
+            --tb=short \
+            -m "integration" \
+            --cov=ea_agentgate \
+            --cov-report=term-missing
+        env:
+          REDIS_URL: redis://localhost:6379
+          PYTHONPATH: ${{ github.workspace }}
+
+  pre-production-enforcement-gate:
+    name: Pre-Production Enforcement Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: lint
+    if: github.event_name != 'push'
+
+    env:
+      AGENTGATE_ENV: test
+      TESTING: "true"
+      AGENTGATE_Z3_MODE: enforce
+      AGENTGATE_FORCE_REMOTE_VERIFICATION: "true"
+      IDENTITY_PROVIDER_MODE: hybrid_migration
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra all --extra enterprise --extra async --extra server
+
+      - name: Run strict runtime enforcement journey tests
+        run: |
+          uv run pytest -q \
+            tests/security/test_verification_controls.py \
+            tests/test_formal_api_contract.py \
+            tests/e2e/test_formal_pii_sdk_journey.py \
+            tests/mcp_policy/test_mcp_policy_contract.py \
+            tests/main_tests/test_lifecycle.py::TestLifespan::test_lifespan_rejects_off_mode_in_production
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run chaos verification gate (single suite)
+        run: |
+          uv run pytest -q \
+            tests/security/test_verification_controls.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run chaos verification gate (parallel suite)
+        run: |
+          uv run pytest -q \
+            tests/test_policy_governance_verification_router.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run chaos verification gate (custom suite)
+        run: |
+          uv run pytest -q \
+            tests/e2e/test_policy_governance_verification_certificate_latency_e2e.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run forensic formal runtime campaign (live-route path)
+        run: |
+          uv run pytest -q tests/mcp_policy/test_mcp_policy_auth_guardrails.py
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Scrub forensic runtime artifacts for share publish
+        run: |
+          uv run python scripts/scrub_formal_artifacts.py --source-profile latest-forensic
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Upload forensic runtime share artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-production-forensic-runtime-share-artifacts
+          path: |
+            tests/artifacts/share/*
+            tests/artifacts/**/FAIL_FAST_TRACE.json
+          retention-days: 14
+
+  cutover-smoke:
+    name: Cutover Smoke (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: lint
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [sqlite, postgres-local]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra server
+
+      - name: Run cutover smoke
+        env:
+          AGENTGATE_ENV: test
+        run: |
+          case "${{ matrix.backend }}" in
+            sqlite)
+              ./run cutover smoke --backend sqlite --no-fallback -- -q
+              ;;
+            postgres-local)
+              ./run cutover smoke --backend postgres-local --no-fallback -- -q
+              ;;
+            *)
+              echo "Unsupported matrix backend: ${{ matrix.backend }}"
+              exit 1
+              ;;
+          esac
+
+  docker-build:
+    name: Docker Build Verification
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+    if: github.event_name != 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image (development stage)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          target: development
+          push: false
+          tags: agentgate-server:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build server image (production stage)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.server
+          target: production
+          push: false
+          tags: agentgate-server:production-test
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          file: dashboard/Dockerfile
+          push: false
+          tags: agentgate-dashboard:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-package:
+    name: Build Distribution Package
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    timeout-minutes: 10
+    if: github.event_name != 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Build package
+        run: uv build
+
+      - name: Check package metadata
+        run: |
+          uv run pip install twine
+          uv run twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-package
+          path: dist/
+          retention-days: 30
+
+  verify-install:
+    name: Verify Installation
+    runs-on: ubuntu-latest
+    needs: build-package
+    timeout-minutes: 10
+    if: github.event_name != 'push'
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-package
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION_MAX }}
+
+      - name: Install from wheel
+        run: |
+          uv venv
+          uv pip install dist/*.whl
+
+      - name: Verify import
+        run: |
+          python -c "import ea_agentgate; print(f'AgentGate version: {ea_agentgate.__version__}')"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [lint, test, build-package, verify-install]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ea-agentgate
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-package
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish
+
+  status-check:
+    name: CI Status Check
+    runs-on: ubuntu-latest
+    needs: [quality-gates, mcp-protocol-gate, lint, test, integration-tests, pre-production-enforcement-gate, cutover-smoke, docker-build, build-package, verify-install]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Check CI status
+        run: |
+          check_result() {
+            local job_name="$1"
+            local result="$2"
+            if [[ "$result" == "success" || "$result" == "skipped" ]]; then
+              return 0
+            fi
+            echo "::error::${job_name} failed with result '${result}'"
+            return 1
+          }
+
+          failures=0
+          check_result "quality-gates" "${{ needs.quality-gates.result }}" || failures=1
+          check_result "mcp-protocol-gate" "${{ needs.mcp-protocol-gate.result }}" || failures=1
+          check_result "lint" "${{ needs.lint.result }}" || failures=1
+          check_result "test" "${{ needs.test.result }}" || failures=1
+          check_result "integration-tests" "${{ needs.integration-tests.result }}" || failures=1
+          check_result "pre-production-enforcement-gate" "${{ needs.pre-production-enforcement-gate.result }}" || failures=1
+          check_result "cutover-smoke" "${{ needs.cutover-smoke.result }}" || failures=1
+          check_result "docker-build" "${{ needs.docker-build.result }}" || failures=1
+          check_result "build-package" "${{ needs.build-package.result }}" || failures=1
+          check_result "verify-install" "${{ needs.verify-install.result }}" || failures=1
+
+          if [[ "$failures" -ne 0 ]]; then
+            echo "::error::One or more CI jobs failed"
+            exit 1
+          fi
+
+          echo "::notice::All CI checks passed successfully"

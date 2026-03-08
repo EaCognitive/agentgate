@@ -1,0 +1,2101 @@
+#!/usr/bin/env bash
+# AgentGate CLI - Single entry point for development and operations
+# Uses gum (https://github.com/charmbracelet/gum) for interactive UI
+# Falls back to plain text if gum is not installed
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ---------------------------------------------------------------------------
+# Theme: Supabase Dark
+# ---------------------------------------------------------------------------
+C_PRIMARY="#3ECF8E"
+C_BORDER="#2A2A2A"
+C_TEXT="#EDEDED"
+C_MUTED="#8F8F8F"
+C_ERROR="#F87171"
+C_WARNING="#FBBF24"
+
+# ANSI fallback colors
+RESET='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+GREEN='\033[32m'
+RED='\033[31m'
+YELLOW='\033[33m'
+CYAN='\033[36m'
+
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$SCRIPT_DIR/pyproject.toml" | head -n 1)"
+if [[ -z "$VERSION" ]]; then
+    VERSION="unknown"
+fi
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
+CONTAINER_TRACKING_DIR="$SCRIPT_DIR/tests/artifacts/operations/container_lifecycle"
+MIGRATIONS_APPLIED=false
+
+# ---------------------------------------------------------------------------
+# Gum detection
+# ---------------------------------------------------------------------------
+HAS_GUM=false
+if command -v gum &>/dev/null; then
+    HAS_GUM=true
+fi
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+info() {
+    if $HAS_GUM; then
+        gum style --foreground "$C_PRIMARY" "  $1"
+    else
+        echo -e "${GREEN}  $1${RESET}"
+    fi
+}
+
+warn() {
+    if $HAS_GUM; then
+        gum style --foreground "$C_WARNING" "  $1"
+    else
+        echo -e "${YELLOW}  $1${RESET}"
+    fi
+}
+
+err() {
+    if $HAS_GUM; then
+        gum style --foreground "$C_ERROR" "  $1"
+    else
+        echo -e "${RED}  $1${RESET}" >&2
+    fi
+}
+
+muted() {
+    if $HAS_GUM; then
+        gum style --foreground "$C_MUTED" "  $1"
+    else
+        echo -e "${DIM}  $1${RESET}"
+    fi
+}
+
+banner() {
+    echo ""
+    if $HAS_GUM; then
+        gum style \
+            --foreground "$C_PRIMARY" \
+            --bold \
+            --margin "0 2" \
+            "  agentgate"
+        gum style \
+            --foreground "$C_MUTED" \
+            --margin "0 2" \
+            "  v${VERSION} -- AI Agent Security Middleware"
+    else
+        echo -e "  ${BOLD}${GREEN}agentgate${RESET}"
+        echo -e "  ${DIM}v${VERSION} -- AI Agent Security Middleware${RESET}"
+    fi
+    echo ""
+}
+
+confirm_action() {
+    local prompt="$1"
+    if $HAS_GUM; then
+        gum confirm \
+            --prompt.foreground "$C_TEXT" \
+            --selected.background "$C_PRIMARY" \
+            --selected.foreground "#000000" \
+            "$prompt"
+    else
+        echo -en "${YELLOW}  $prompt [y/N] ${RESET}"
+        read -r answer
+        [[ "$answer" =~ ^[Yy]$ ]]
+    fi
+}
+
+spin() {
+    local title="$1"
+    shift
+    if $HAS_GUM; then
+        gum spin \
+            --spinner dot \
+            --spinner.foreground "$C_PRIMARY" \
+            --title "$title" \
+            -- "$@"
+    else
+        echo -e "${CYAN}  $title${RESET}"
+        "$@"
+    fi
+}
+
+compose_project_name() {
+    if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+        echo "$COMPOSE_PROJECT_NAME"
+        return 0
+    fi
+    basename "$SCRIPT_DIR" | tr '[:upper:]' '[:lower:]'
+}
+
+record_container_event() {
+    local command_name="$1"
+    local phase="$2"
+    local note="${3:-}"
+    local project_name
+    project_name="$(compose_project_name)"
+    mkdir -p "$CONTAINER_TRACKING_DIR"
+
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    "$python_bin" - "$CONTAINER_TRACKING_DIR" "$RUN_ID" \
+        "$command_name" "$phase" "$project_name" "$note" <<'PY'
+import json
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def _run(command: list[str]) -> str:
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def _parse_json_lines(raw: str) -> list[dict]:
+    parsed: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            parsed.append(value)
+    return parsed
+
+
+output_dir = Path(sys.argv[1])
+run_id = sys.argv[2]
+command_name = sys.argv[3]
+phase = sys.argv[4]
+project_name = sys.argv[5]
+note = sys.argv[6]
+timestamp_utc = datetime.now(timezone.utc).isoformat()
+
+compose_ps = _parse_json_lines(_run(["docker", "compose", "ps", "--format", "json"]))
+docker_ps = _parse_json_lines(_run(["docker", "ps", "--format", "{{json .}}"]))
+project_volumes = _parse_json_lines(
+    _run(
+        [
+            "docker",
+            "volume",
+            "ls",
+            "--filter",
+            f"label=com.docker.compose.project={project_name}",
+            "--format",
+            "{{json .}}",
+        ]
+    )
+)
+
+health_counts = {
+    "healthy": 0,
+    "unhealthy": 0,
+    "starting": 0,
+    "unknown": 0,
+}
+for row in compose_ps:
+    health = str(row.get("Health") or "").strip().lower()
+    if health == "healthy":
+        health_counts["healthy"] += 1
+        continue
+    if health == "unhealthy":
+        health_counts["unhealthy"] += 1
+        continue
+    if health == "starting":
+        health_counts["starting"] += 1
+        continue
+    health_counts["unknown"] += 1
+
+event = {
+    "event_id": str(uuid.uuid4()),
+    "timestamp_utc": timestamp_utc,
+    "run_id": run_id,
+    "command": command_name,
+    "phase": phase,
+    "project_name": project_name,
+    "cwd": str(Path.cwd()),
+    "note": note,
+    "compose_containers": compose_ps,
+    "runtime_containers": docker_ps,
+    "project_volumes": project_volumes,
+    "summary": {
+        "compose_container_count": len(compose_ps),
+        "runtime_container_count": len(docker_ps),
+        "project_volume_count": len(project_volumes),
+        "health": health_counts,
+    },
+}
+
+events_file = output_dir / "events.jsonl"
+with events_file.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+latest_file = output_dir / "latest.json"
+latest_file.write_text(json.dumps(event, indent=2, sort_keys=True), encoding="utf-8")
+PY
+}
+
+run_db_migrations() {
+    local db_user="${POSTGRES_USER:-agentgate}"
+    local db_name="${POSTGRES_DB:-agentgate}"
+    local users_exists
+    local principal_id_exists
+    local alembic_exists
+
+    users_exists=$(
+        docker compose exec -T db psql -U "$db_user" -d "$db_name" -tAc \
+            "SELECT CASE WHEN to_regclass('public.users') IS NULL THEN '0' ELSE '1' END;" \
+            2>/dev/null | tr -d '[:space:]'
+    )
+    if [[ "$users_exists" != "1" ]]; then
+        MIGRATIONS_APPLIED=false
+        info "Skipping Alembic: bootstrap schema not initialized yet."
+        return 0
+    fi
+
+    principal_id_exists=$(
+        docker compose exec -T db psql -U "$db_user" -d "$db_name" -tAc \
+            "SELECT CASE WHEN EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='users' AND column_name='principal_id'
+            ) THEN '1' ELSE '0' END;" \
+            2>/dev/null | tr -d '[:space:]'
+    )
+    alembic_exists=$(
+        docker compose exec -T db psql -U "$db_user" -d "$db_name" -tAc \
+            "SELECT CASE WHEN to_regclass('public.alembic_version') IS NULL THEN '0' ELSE '1' END;" \
+            2>/dev/null | tr -d '[:space:]'
+    )
+
+    if [[ "$alembic_exists" != "1" && "$principal_id_exists" == "1" ]]; then
+        MIGRATIONS_APPLIED=false
+        info "Skipping Alembic: schema already includes identity columns."
+        return 0
+    fi
+
+    if [[ "$principal_id_exists" != "1" ]]; then
+        info "Reconciling legacy identity schema columns..."
+        if docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$db_user" -d "$db_name" <<'SQL' >/tmp/agentgate_schema_patch.log 2>&1
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS principal_id VARCHAR(64);
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS identity_provider VARCHAR(64) DEFAULT 'local';
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS provider_subject VARCHAR(255);
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS ix_users_principal_id ON users (principal_id);
+CREATE INDEX IF NOT EXISTS ix_users_identity_provider ON users (identity_provider);
+CREATE INDEX IF NOT EXISTS ix_users_provider_subject ON users (provider_subject);
+CREATE INDEX IF NOT EXISTS ix_users_tenant_id ON users (tenant_id);
+ALTER TABLE IF EXISTS pii_sessions ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) DEFAULT 'default';
+ALTER TABLE IF EXISTS pii_sessions ADD COLUMN IF NOT EXISTS principal_id VARCHAR(64);
+CREATE INDEX IF NOT EXISTS ix_pii_sessions_tenant_id ON pii_sessions (tenant_id);
+CREATE INDEX IF NOT EXISTS ix_pii_sessions_principal_id ON pii_sessions (principal_id);
+SQL
+        then
+            MIGRATIONS_APPLIED=true
+            info "Legacy identity schema reconciliation completed."
+            return 0
+        fi
+        err "Legacy identity schema reconciliation failed."
+        muted "Schema patch log:"
+        sed -n '1,120p' /tmp/agentgate_schema_patch.log
+        return 1
+    fi
+
+    info "Applying database migrations (alembic upgrade head)..."
+    if docker compose run --rm --no-deps server \
+        /app/.venv/bin/python -m alembic -c /app/alembic.ini upgrade head \
+        >/tmp/agentgate_migrate.log 2>&1; then
+        MIGRATIONS_APPLIED=true
+        info "Database migrations completed."
+        return 0
+    fi
+
+    err "Database migrations failed."
+    muted "Migration log:"
+    sed -n '1,120p' /tmp/agentgate_migrate.log
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Env loading
+# ---------------------------------------------------------------------------
+load_env_file_exports() {
+    local env_file="$1"
+    if [[ ! -f "$env_file" ]]; then
+        return 0
+    fi
+
+    # shellcheck disable=SC1090
+    set -a
+    source "$env_file"
+    set +a
+}
+
+# ---------------------------------------------------------------------------
+# .env auto-setup
+# ---------------------------------------------------------------------------
+setup_env() {
+    local changed=false
+
+    if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
+        if [[ -f "$SCRIPT_DIR/.env.example" ]]; then
+            cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+
+            local secret_key
+            secret_key=$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")
+            local nextauth_secret
+            nextauth_secret=$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")
+            local postgres_pw
+            postgres_pw=$(openssl rand -hex 16 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(16))")
+
+            if [[ "$(uname)" == "Darwin" ]]; then
+                sed -i '' "s/your-secret-key-here/$secret_key/" "$SCRIPT_DIR/.env"
+                sed -i '' "s/your-nextauth-secret-here/$nextauth_secret/" "$SCRIPT_DIR/.env"
+                sed -i '' "s/generate-secure-password-here/$postgres_pw/" "$SCRIPT_DIR/.env"
+            else
+                sed -i "s/your-secret-key-here/$secret_key/" "$SCRIPT_DIR/.env"
+                sed -i "s/your-nextauth-secret-here/$nextauth_secret/" "$SCRIPT_DIR/.env"
+                sed -i "s/generate-secure-password-here/$postgres_pw/" "$SCRIPT_DIR/.env"
+            fi
+
+            info "Created .env with generated secrets"
+            changed=true
+
+            # If a postgres volume already exists, the new random password
+            # won't match the one baked into it.
+            local vol_name
+            vol_name=$(docker volume ls -q 2>/dev/null \
+                | grep -E "agentgate.*postgres" || true)
+            if [[ -n "$vol_name" ]]; then
+                warn "Existing PostgreSQL volume detected ($vol_name)."
+                warn "The new .env has a fresh password that won't"
+                warn "match the one stored in the volume."
+                echo ""
+                muted "Keeping existing volume by default to preserve user credentials."
+                muted "If you intentionally need a full reset, run: ./run clean --wipe-data"
+                echo ""
+            fi
+        fi
+    fi
+
+    if [[ ! -f "$SCRIPT_DIR/server/.env" ]]; then
+        if [[ -f "$SCRIPT_DIR/server/.env.example" ]]; then
+            cp "$SCRIPT_DIR/server/.env.example" "$SCRIPT_DIR/server/.env"
+
+            local server_secret
+            server_secret=$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")
+
+            if [[ "$(uname)" == "Darwin" ]]; then
+                sed -i '' "s/your-secret-key-change-this/$server_secret/" "$SCRIPT_DIR/server/.env"
+            else
+                sed -i "s/your-secret-key-change-this/$server_secret/" "$SCRIPT_DIR/server/.env"
+            fi
+
+            info "Created server/.env with generated secret"
+            changed=true
+        fi
+    fi
+
+    if [[ ! -f "$SCRIPT_DIR/dashboard/.env" ]]; then
+        if [[ -f "$SCRIPT_DIR/dashboard/.env.example" ]]; then
+            cp "$SCRIPT_DIR/dashboard/.env.example" "$SCRIPT_DIR/dashboard/.env"
+
+            local dash_secret
+            dash_secret=$(openssl rand -hex 32 2>/dev/null || python3 -c "import secrets; print(secrets.token_hex(32))")
+
+            if [[ "$(uname)" == "Darwin" ]]; then
+                sed -i '' "s/your-secret-key-here-minimum-32-characters/$dash_secret/" "$SCRIPT_DIR/dashboard/.env"
+            else
+                sed -i "s/your-secret-key-here-minimum-32-characters/$dash_secret/" "$SCRIPT_DIR/dashboard/.env"
+            fi
+
+            info "Created dashboard/.env with generated secret"
+            changed=true
+        fi
+    fi
+
+    if $changed; then
+        echo ""
+    fi
+
+    # Load environment values for run-managed processes.
+    load_env_file_exports "$SCRIPT_DIR/.env"
+    load_env_file_exports "$SCRIPT_DIR/server/.env"
+    load_env_file_exports "$SCRIPT_DIR/dashboard/.env"
+}
+
+# ---------------------------------------------------------------------------
+# open_url - cross-platform browser open
+# ---------------------------------------------------------------------------
+open_url() {
+    local url="$1"
+    if command -v open &>/dev/null; then
+        open "$url"
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "$url"
+    elif command -v wslview &>/dev/null; then
+        wslview "$url"
+    else
+        info "Open in your browser: $url"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_health - poll an endpoint until it responds with expected content
+# ---------------------------------------------------------------------------
+wait_for_health() {
+    local url="$1"
+    local name="$2"
+    local max_attempts="${3:-60}"
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        local body
+        body=$(curl -sf "$url" 2>/dev/null || true)
+        if [[ -n "$body" ]]; then
+            # For the API, verify it returns AgentGate's health signature
+            if [[ "$url" == *"/api/health"* ]]; then
+                if echo "$body" | grep -q '"status"'; then
+                    return 0
+                fi
+            else
+                # Dashboard just needs to respond
+                return 0
+            fi
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+
+    err "$name did not become healthy after $((max_attempts * 2))s"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+cmd_demo() {
+    local fresh=false
+    local no_open=false
+    record_container_event "demo" "start" "demo command invoked"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fresh|--from-zero)
+                fresh=true
+                shift
+                ;;
+            --no-open)
+                no_open=true
+                shift
+                ;;
+            *)
+                err "Unknown demo option: $1"
+                muted "Usage: ./run demo [--fresh|--from-zero] [--no-open]"
+                return 1
+                ;;
+        esac
+    done
+
+    if $fresh; then
+        warn "Fresh mode enabled: removing existing containers and volumes."
+        docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+        docker compose --profile test down -v --remove-orphans >/dev/null 2>&1 || true
+        local project_name
+        project_name="$(compose_project_name)"
+        local lingering_volumes
+        lingering_volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project_name" || true)
+        if [[ -n "$lingering_volumes" ]]; then
+            echo "$lingering_volumes" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
+        fi
+        record_container_event "demo" "after_fresh_reset" "fresh reset completed"
+        info "Docker state reset complete."
+        echo ""
+    fi
+
+    if ! $fresh; then
+        local runtime_volume
+        runtime_volume=$(docker volume ls --format '{{.Name}}' 2>/dev/null | \
+            grep -E '(^agentgate_postgres_data$|_postgres_data$)' || true)
+        if [[ -n "$runtime_volume" ]]; then
+            warn "Existing PostgreSQL volume detected. Persisted data will be reused."
+            muted "Use './run demo --fresh' for deterministic zero-state startup."
+            echo ""
+        fi
+    fi
+
+    info "Starting full stack with Docker Compose..."
+    echo ""
+
+    local compose_exit=0
+    # Use compact progress output to reduce verbosity
+    export BUILDKIT_PROGRESS=plain
+
+    if $HAS_GUM; then
+        gum spin \
+            --spinner dot \
+            --spinner.foreground "$C_PRIMARY" \
+            --title "Building and starting containers..." \
+            -- docker compose up -d --build \
+            || compose_exit=$?
+    else
+        echo -e "${CYAN}  Building and starting containers...${RESET}"
+        docker compose up -d --build 2>&1 | \
+            grep -v "^#" | \
+            grep -v "=>" | \
+            grep -v "transferring" | \
+            cat
+        compose_exit=${PIPESTATUS[0]}
+    fi
+
+    if [[ $compose_exit -ne 0 ]]; then
+        record_container_event "demo" "compose_failed" "docker compose up returned non-zero"
+        echo ""
+        err "Docker Compose failed (exit $compose_exit)."
+
+        # Check for common causes
+        if ! docker info &>/dev/null 2>&1; then
+            err "Docker daemon is not running. Start Docker Desktop and retry."
+        elif docker compose logs server 2>/dev/null \
+            | tail -5 | grep -qi "password\|auth"; then
+            err "Database authentication failed."
+            err "The password in .env doesn't match the existing volume."
+            muted "Fix: ./run clean   (removes volumes, then re-run ./run demo)"
+        else
+            muted "Check logs: ./run logs"
+        fi
+        return 1
+    fi
+
+    record_container_event "demo" "after_compose_up" "containers built and started"
+
+    if ! run_db_migrations; then
+        record_container_event "demo" "migration_failed" "alembic upgrade head failed"
+        return 1
+    fi
+    record_container_event "demo" "after_migrations" "alembic upgrade head completed"
+
+    if $MIGRATIONS_APPLIED; then
+        info "Restarting API server after migrations..."
+        docker compose restart server >/dev/null 2>&1 || true
+    fi
+
+    echo ""
+    info "Waiting for services to become healthy..."
+    echo ""
+
+    local server_ok=false
+    local dash_ok=false
+
+    if $HAS_GUM; then
+        gum spin \
+            --spinner dot \
+            --spinner.foreground "$C_PRIMARY" \
+            --title "Waiting for API server (port 8000)..." \
+            -- bash -c "$(declare -f wait_for_health); wait_for_health http://localhost:8000/api/health 'API Server' 60" \
+            && server_ok=true
+    else
+        echo -e "${CYAN}  Waiting for API server (port 8000)...${RESET}"
+        if wait_for_health "http://localhost:8000/api/health" "API Server" 60; then
+            server_ok=true
+        fi
+    fi
+
+    if $server_ok; then
+        info "API server is healthy"
+    else
+        err "API server failed to start"
+    fi
+
+    if $HAS_GUM; then
+        gum spin \
+            --spinner dot \
+            --spinner.foreground "$C_PRIMARY" \
+            --title "Waiting for Dashboard (port 3000)..." \
+            -- bash -c "$(declare -f wait_for_health); wait_for_health http://localhost:3000 Dashboard 60" \
+            && dash_ok=true
+    else
+        echo -e "${CYAN}  Waiting for Dashboard (port 3000)...${RESET}"
+        if wait_for_health "http://localhost:3000" "Dashboard" 60; then
+            dash_ok=true
+        fi
+    fi
+
+    if $dash_ok; then
+        info "Dashboard is healthy"
+    else
+        err "Dashboard failed to start"
+    fi
+
+    echo ""
+    if $server_ok && $dash_ok; then
+        record_container_event "demo" "healthy" "api and dashboard healthy"
+        info "AgentGate is running!"
+        echo ""
+        muted "  Dashboard:  http://localhost:3000"
+        muted "  API Docs:   http://localhost:8000/docs"
+        muted "  Health:     http://localhost:8000/api/health"
+        echo ""
+
+        muted "  First-time setup: open /setup and create the initial admin account"
+        echo ""
+
+        if ! $no_open; then
+            open_url "http://localhost:3000"
+        fi
+        muted "Runtime tracking: $CONTAINER_TRACKING_DIR/latest.json"
+        muted "Run ID: $RUN_ID"
+    else
+        record_container_event "demo" "unhealthy" "one or more services failed health checks"
+        err "Some services failed to start. Run './run logs' to investigate."
+    fi
+}
+
+cmd_dev() {
+    info "Starting local development servers..."
+    echo ""
+    muted "Backend:   http://localhost:8000  (uvicorn --reload)"
+    muted "Dashboard: http://localhost:3000  (next dev)"
+    echo ""
+
+    # Determine python executable
+    local python_cmd="python3"
+    if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_cmd="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    # Start backend in background
+    info "Starting backend..."
+    cd "$SCRIPT_DIR"
+    $python_cmd -m uvicorn server.main:app \
+        --reload \
+        --host 0.0.0.0 \
+        --port 8000 &
+    local backend_pid=$!
+
+    # Start dashboard in background
+    info "Starting dashboard..."
+    cd "$SCRIPT_DIR/dashboard"
+    npm run dev &
+    local dashboard_pid=$!
+
+    cd "$SCRIPT_DIR"
+    echo ""
+    info "Both servers running. Press Ctrl+C to stop."
+    muted "Backend PID:   $backend_pid"
+    muted "Dashboard PID: $dashboard_pid"
+    echo ""
+
+    # Trap SIGINT/SIGTERM to kill both
+    trap 'echo ""; info "Shutting down..."; kill $backend_pid $dashboard_pid 2>/dev/null; wait $backend_pid $dashboard_pid 2>/dev/null; info "Stopped."; exit 0' INT TERM
+
+    # Wait for either to exit
+    wait -n $backend_pid $dashboard_pid 2>/dev/null || true
+    warn "A server exited. Stopping remaining processes..."
+    kill $backend_pid $dashboard_pid 2>/dev/null || true
+    wait $backend_pid $dashboard_pid 2>/dev/null || true
+}
+
+cmd_test() {
+    exec "$SCRIPT_DIR/test" "$@"
+}
+
+cmd_verify_formal_chaos() {
+    local mode="${1:-single}"
+    shift || true
+
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    local runner="$SCRIPT_DIR/scripts/run_chaos_verification.py"
+    if [[ ! -f "$runner" ]]; then
+        err "Chaos verification runner not found: $runner"
+        return 1
+    fi
+
+    case "$mode" in
+        single|parallel|custom)
+            info "Running chaos verification mode: $mode"
+            "$python_bin" "$runner" --mode "$mode" "$@"
+            ;;
+        *)
+            err "Unknown chaos verification mode: $mode"
+            muted "Valid usage: ./run verify formal chaos [single|parallel|custom] [options]"
+            return 1
+            ;;
+    esac
+}
+
+cmd_verify() {
+    local domain="formal"
+    local subcommand="latest"
+    local -a sub_args=()
+
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            formal|mcp)
+                domain="$1"
+                shift
+                ;;
+        esac
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        subcommand="$1"
+        shift
+    fi
+    sub_args=("$@")
+
+    if [[ "$domain" == "mcp" ]]; then
+        cmd_verify_mcp "$subcommand" "${sub_args[@]}"
+        return
+    fi
+
+    local artifacts_dir="$SCRIPT_DIR/tests/artifacts"
+    local algorithm_dir="$artifacts_dir/algorithm"
+    local formal_dir="$algorithm_dir/formal_verification"
+    local latest_dir="$formal_dir/latest"
+    local history_dir="$formal_dir/history"
+    local legacy_latest_dir="$artifacts_dir/latest"
+    local legacy_history_dir="$artifacts_dir/history"
+    local latest_link_dir="$artifacts_dir/chaos_verification_latest"
+    local legacy_latest_link_dir="$artifacts_dir/chaos_latest"
+    local json_name="chaos_verification_results.json"
+    local legacy_json_name="chaos_campaign_results.json"
+
+    if [[ ! -d "$latest_dir" && -d "$legacy_latest_dir" ]]; then
+        latest_dir="$legacy_latest_dir"
+    fi
+    if [[ ! -d "$latest_dir" && -L "$latest_link_dir" ]]; then
+        latest_dir="$latest_link_dir"
+    fi
+    if [[ ! -d "$latest_dir" && -L "$legacy_latest_link_dir" ]]; then
+        latest_dir="$legacy_latest_link_dir"
+    fi
+    if [[ ! -d "$history_dir" && -d "$legacy_history_dir" ]]; then
+        history_dir="$legacy_history_dir"
+    fi
+
+    case "$subcommand" in
+        chaos)
+            cmd_verify_formal_chaos "${sub_args[@]}"
+            ;;
+        latest)
+            if [[ ! -d "$latest_dir" ]]; then
+                err "Canonical latest verification artifacts not found."
+                muted "Run verification suite first (500K profile) to publish latest."
+                return 1
+            fi
+            info "Canonical latest verification artifacts"
+            muted "Directory: $latest_dir"
+            if [[ -f "$latest_dir/source_run.txt" ]]; then
+                muted "Source run: $(tr -d '\n' < "$latest_dir/source_run.txt")"
+            fi
+            echo ""
+            if [[ -f "$latest_dir/SUMMARY.txt" ]]; then
+                cat "$latest_dir/SUMMARY.txt"
+            else
+                warn "SUMMARY.txt is missing in canonical latest."
+            fi
+            ;;
+        json)
+            if [[ ! -f "$latest_dir/$json_name" && ! -f "$latest_dir/$legacy_json_name" ]]; then
+                err "Canonical latest JSON results are missing."
+                return 1
+            fi
+            if [[ -f "$latest_dir/$json_name" ]]; then
+                python3 -m json.tool "$latest_dir/$json_name"
+            else
+                python3 -m json.tool "$latest_dir/$legacy_json_name"
+            fi
+            ;;
+        history)
+            if [[ ! -d "$history_dir" ]]; then
+                warn "No history directory exists yet."
+                return 0
+            fi
+            info "Archived canonical latest snapshots"
+            find "$history_dir" -mindepth 1 -maxdepth 1 -type d \
+                | sort -r \
+                | head -n 20 \
+                | sed "s#^$SCRIPT_DIR/##"
+            ;;
+        path)
+            echo "$latest_dir"
+            ;;
+        run)
+            local python_bin="python3"
+            if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+                python_bin="$SCRIPT_DIR/.venv/bin/python"
+            fi
+            local runner="$SCRIPT_DIR/scripts/run_policy_governance_journey.py"
+            if [[ ! -f "$runner" ]]; then
+                err "Formal runtime forensic runner not found: $runner"
+                return 1
+            fi
+            info "Running formal runtime forensic campaign..."
+            "$python_bin" "$runner" "${sub_args[@]}"
+            ;;
+        scrub)
+            local python_bin="python3"
+            if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+                python_bin="$SCRIPT_DIR/.venv/bin/python"
+            fi
+            local scrubber="$SCRIPT_DIR/scripts/scrub_formal_artifacts.py"
+            if [[ ! -f "$scrubber" ]]; then
+                err "Formal artifact scrubber not found: $scrubber"
+                return 1
+            fi
+            info "Scrubbing and verifying formal artifacts for sharing..."
+            "$python_bin" "$scrubber" "${sub_args[@]}"
+            ;;
+        organize)
+            local python_bin="python3"
+            if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+                python_bin="$SCRIPT_DIR/.venv/bin/python"
+            fi
+            local organizer="$SCRIPT_DIR/scripts/organize_policy_governance_artifacts.py"
+            if [[ ! -f "$organizer" ]]; then
+                err "Artifact organizer not found: $organizer"
+                return 1
+            fi
+            info "Organizing policy-governance artifacts into canonical layout..."
+            "$python_bin" "$organizer" "${sub_args[@]}"
+            ;;
+        report)
+            local python_bin="python3"
+            if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+                python_bin="$SCRIPT_DIR/.venv/bin/python"
+            fi
+            local reporter="$SCRIPT_DIR/scripts/generate_policy_governance_report.py"
+            if [[ ! -f "$reporter" ]]; then
+                err "Formal verification report generator not found: $reporter"
+                return 1
+            fi
+            info "Generating policy-governance formal verification report package..."
+            "$python_bin" "$reporter" "${sub_args[@]}"
+            ;;
+        *)
+            err "Unknown verify subcommand: $subcommand"
+            muted "Valid usage: ./run verify formal [chaos|latest|json|history|path|run|scrub|organize|report]"
+            return 1
+            ;;
+    esac
+}
+
+cmd_verify_mcp() {
+    local subcommand="${1:-policy-validation}"
+    shift || true
+
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    local validator="$SCRIPT_DIR/scripts/validate_policy_governance_adapter.py"
+    local artifacts_root="$SCRIPT_DIR/tests/artifacts/algorithm/policy_governance_validation"
+    local scrubber="$SCRIPT_DIR/scripts/scrub_formal_artifacts.py"
+
+    case "$subcommand" in
+        policy-validation|ground-truth)
+            if [[ ! -f "$validator" ]]; then
+                err "MCP policy-governance validator not found: $validator"
+                return 1
+            fi
+            info "Running MCP policy-governance validator..."
+            "$python_bin" "$validator" "$@"
+            ;;
+        latest)
+            if [[ ! -d "$artifacts_root" ]]; then
+                err "No MCP policy-governance validation artifacts found."
+                return 1
+            fi
+            local latest_dir
+            latest_dir=$(find "$artifacts_root" -mindepth 1 -maxdepth 1 -type d | sort -r | head -n 1)
+            if [[ -z "$latest_dir" ]]; then
+                err "No MCP policy-governance validation artifacts found."
+                return 1
+            fi
+            info "Latest MCP policy-governance validation artifact"
+            muted "Directory: $latest_dir"
+            if [[ -f "$latest_dir/SUMMARY.txt" ]]; then
+                echo ""
+                cat "$latest_dir/SUMMARY.txt"
+            fi
+            ;;
+        history)
+            if [[ ! -d "$artifacts_root" ]]; then
+                warn "No MCP policy-governance validation history directory exists yet."
+                return 0
+            fi
+            find "$artifacts_root" -mindepth 1 -maxdepth 1 -type d | sort -r | head -n 30
+            ;;
+        scrub)
+            if [[ ! -f "$scrubber" ]]; then
+                err "Formal artifact scrubber not found: $scrubber"
+                return 1
+            fi
+            local -a mapped_args=()
+            local idx=1
+            local args=("$@")
+            while [[ $idx -le ${#args[@]} ]]; do
+                local arg="${args[$((idx-1))]}"
+                if [[ "$arg" == "--source" ]]; then
+                    idx=$((idx + 1))
+                    if [[ $idx -gt ${#args[@]} ]]; then
+                        err "Missing value for --source"
+                        return 1
+                    fi
+                    mapped_args+=("--source-dir" "${args[$((idx-1))]}")
+                    idx=$((idx + 1))
+                    continue
+                fi
+                mapped_args+=("$arg")
+                idx=$((idx + 1))
+            done
+            info "Scrubbing MCP artifacts before sharing..."
+            "$python_bin" "$scrubber" "${mapped_args[@]}"
+            ;;
+        *)
+            err "Unknown MCP verify subcommand: $subcommand"
+            muted "Valid usage: ./run verify mcp [policy-validation|latest|history|scrub]"
+            return 1
+            ;;
+    esac
+}
+
+cmd_preprod_mcp_gate() {
+    local env_name="${AGENTGATE_ENV:-development}"
+    local profile="${MCP_POLICY_VALIDATION_PROFILE:-${MCP_GROUND_TRUTH_PROFILE:-dev}}"
+    local count="${MCP_POLICY_VALIDATION_COUNT:-${MCP_GROUND_TRUTH_COUNT:-10000}}"
+
+    if [[ "$env_name" == "staging" ]]; then
+        profile="staging"
+    elif [[ "$env_name" == "production" ]]; then
+        profile="prod-like"
+    fi
+
+    if [[ "$profile" == "staging" || "$profile" == "prod-like" ]]; then
+        if [[ -z "${MCP_POLICY_SET_ID:-}" ]]; then
+            err "MCP pre-production gate requires MCP_POLICY_SET_ID in $profile profile."
+            return 1
+        fi
+        if [[ "${AGENTGATE_Z3_MODE:-enforce}" == "off" ]]; then
+            err "AGENTGATE_Z3_MODE=off is not allowed for $profile pre-production gate."
+            return 1
+        fi
+    fi
+
+    cmd_verify mcp policy-validation --profile "$profile" --count "$count"
+}
+
+cmd_infra_audit() {
+    local exit_code=0
+
+    info "Phase 1: Infrastructure and secrets audit"
+    echo ""
+
+    if [[ -f "$SCRIPT_DIR/pyproject.toml" ]] && rg -q '^\[project\]' "$SCRIPT_DIR/pyproject.toml"; then
+        info "PEP 621 project metadata detected in pyproject.toml"
+    else
+        err "pyproject.toml is missing [project] metadata"
+        exit_code=1
+    fi
+
+    if rg -q 'pydantic_settings' "$SCRIPT_DIR/server/config.py" \
+        && rg -q 'KeyringSettingsSource' "$SCRIPT_DIR/server/config.py"; then
+        info "Keyring-first settings source detected (pydantic-settings)"
+    else
+        err "Keyring-first settings source is missing in server/config.py"
+        exit_code=1
+    fi
+
+    if rg -q '^FROM python:3\.13-slim-bookworm' "$SCRIPT_DIR/Dockerfile.server"; then
+        info "Dockerfile.server uses python:3.13-slim-bookworm base image"
+    else
+        err "Dockerfile.server does not use python:3.13-slim-bookworm"
+        exit_code=1
+    fi
+
+    if rg -q '^USER appuser$' "$SCRIPT_DIR/Dockerfile.server"; then
+        info "Docker runtime is configured for non-root execution"
+    else
+        err "Docker runtime user is not set to appuser"
+        exit_code=1
+    fi
+
+    if docker compose config >/dev/null 2>&1; then
+        info "docker compose configuration is valid"
+    else
+        err "docker compose configuration validation failed"
+        exit_code=1
+    fi
+
+    echo ""
+    if [[ $exit_code -eq 0 ]]; then
+        info "Phase 1 completed"
+    else
+        err "Phase 1 failed"
+    fi
+    return $exit_code
+}
+
+cmd_lint() {
+    local exit_code=0
+
+    info "Running ruff..."
+    echo ""
+    if python3 -m ruff check . --exclude .worktrees,tests/artifacts/workflow; then
+        info "Ruff checks passed"
+    else
+        err "Ruff checks failed"
+        exit_code=1
+    fi
+
+    echo ""
+    info "Running naming governance checks..."
+    echo ""
+    if python3 "$SCRIPT_DIR/scripts/check_naming_conventions.py"; then
+        info "Naming governance checks passed"
+    else
+        err "Naming governance checks failed"
+        exit_code=1
+    fi
+
+    echo ""
+    info "Running pylint (errors-only)..."
+    echo ""
+    if python3 -m pylint server ea_agentgate --errors-only; then
+        info "Pylint checks passed"
+    else
+        err "Pylint checks failed"
+        exit_code=1
+    fi
+
+    echo ""
+    info "Checking dashboard build..."
+    echo ""
+    cd "$SCRIPT_DIR/dashboard"
+    if npm run build --silent 2>&1; then
+        info "Dashboard build passed"
+    else
+        err "Dashboard build failed"
+        exit_code=1
+    fi
+    cd "$SCRIPT_DIR"
+
+    echo ""
+    if [[ $exit_code -eq 0 ]]; then
+        info "All checks passed"
+    else
+        err "Some checks failed"
+    fi
+    return $exit_code
+}
+
+cmd_docs_check() {
+    local exit_code=0
+
+    info "Building docs bundle..."
+    echo ""
+    if python3 "$SCRIPT_DIR/scripts/build_docs_bundle.py"; then
+        info "Docs bundle build passed"
+    else
+        err "Docs bundle build failed"
+        exit_code=1
+    fi
+
+    echo ""
+    info "Running docs governance checks..."
+    echo ""
+    if python3 "$SCRIPT_DIR/scripts/check_docs_governance.py"; then
+        info "Docs governance checks passed"
+    else
+        err "Docs governance checks failed"
+        exit_code=1
+    fi
+
+    echo ""
+    info "Running docs claim alignment checks..."
+    echo ""
+    if python3 "$SCRIPT_DIR/scripts/validate_docs_claims.py"; then
+        info "Docs claim alignment checks passed"
+    else
+        err "Docs claim alignment checks failed"
+        exit_code=1
+    fi
+
+    echo ""
+    if [[ $exit_code -eq 0 ]]; then
+        info "Documentation checks passed"
+    else
+        err "Documentation checks failed"
+    fi
+    return $exit_code
+}
+
+cmd_migrate() {
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    local action="${1:-current}"
+    if [[ $# -gt 0 ]]; then
+        shift
+    fi
+
+    case "$action" in
+        up)
+            "$python_bin" -m alembic upgrade head
+            ;;
+        down)
+            local target="${1:--1}"
+            "$python_bin" -m alembic downgrade "$target"
+            ;;
+        current)
+            "$python_bin" -m alembic current
+            ;;
+        history)
+            "$python_bin" -m alembic history --verbose
+            ;;
+        heads)
+            "$python_bin" -m alembic heads
+            ;;
+        create)
+            local message="${1:-}"
+            if [[ -z "$message" ]]; then
+                err "Migration message required: ./run migrate create \"description\""
+                return 1
+            fi
+            "$python_bin" -m alembic revision --autogenerate -m "$message"
+            ;;
+        *)
+            err "Unknown migrate action: $action"
+            muted "Valid actions: up, down [target], current, history, heads, create <message>"
+            return 1
+            ;;
+    esac
+}
+
+is_truthy() {
+    local raw="${1:-}"
+    local value
+    value=$(echo "$raw" | tr '[:upper:]' '[:lower:]')
+    case "$value" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ensure_psycopg_driver() {
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    if "$python_bin" -c "import psycopg" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! command -v uv >/dev/null 2>&1; then
+        err "psycopg is required for PostgreSQL cutover simulation."
+        muted "Install uv or preinstall psycopg in the active Python environment."
+        return 1
+    fi
+
+    info "Installing psycopg driver in project environment..."
+    uv pip install --python "$python_bin" "psycopg[binary]>=3.2.0"
+}
+
+wait_for_local_cutover_postgres() {
+    info "Ensuring local PostgreSQL test container is ready..."
+    if ! docker compose --profile test up -d db-test >/dev/null 2>&1; then
+        err "Unable to start db-test container for cutover simulation."
+        return 1
+    fi
+
+    local attempt=0
+    local max_attempts=45
+    while [[ $attempt -lt $max_attempts ]]; do
+        if docker compose --profile test exec -T db-test pg_isready -U test >/dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    err "db-test container did not become ready in time."
+    return 1
+}
+
+check_cloud_postgres_connectivity() {
+    local db_url="$1"
+    local python_bin="python3"
+    if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+        python_bin="$SCRIPT_DIR/.venv/bin/python"
+    fi
+
+    "$python_bin" - "$db_url" <<'PY'
+import sys
+import psycopg
+
+url = sys.argv[1].replace("postgresql+psycopg://", "postgresql://", 1)
+with psycopg.connect(url, connect_timeout=5) as conn:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+PY
+}
+
+run_cutover_smoke_attempt() {
+    local backend="$1"
+    local db_url="$2"
+    local allow_cloud="$3"
+    shift 3
+    local -a test_args=("$@")
+    local -a cmd=(
+        "$SCRIPT_DIR/test"
+        --no-parallel
+        --no-open
+        tests/integration/test_identity_cutover.py
+    )
+    if [[ ${#test_args[@]} -gt 0 ]]; then
+        cmd+=("${test_args[@]}")
+    fi
+
+    case "$backend" in
+        sqlite)
+            info "Cutover smoke backend: sqlite (local fallback)"
+            env CUTOVER_TEST_BACKEND=sqlite "${cmd[@]}"
+            ;;
+        postgres-local)
+            if ! command -v docker >/dev/null 2>&1; then
+                err "Docker is unavailable for postgres-local cutover backend."
+                return 1
+            fi
+            if ! docker info >/dev/null 2>&1; then
+                err "Docker daemon is not running for postgres-local cutover backend."
+                return 1
+            fi
+            ensure_psycopg_driver || return 1
+            wait_for_local_cutover_postgres || return 1
+            info "Cutover smoke backend: postgres-local (docker profile test db)"
+            env \
+                CUTOVER_TEST_BACKEND=postgres \
+                CUTOVER_TEST_REQUIRE_POSTGRES=true \
+                "${cmd[@]}"
+            ;;
+        postgres-cloud)
+            if [[ -z "$db_url" ]]; then
+                err "postgres-cloud backend requires a database URL."
+                muted "Set CUTOVER_TEST_DATABASE_URL or pass --db-url."
+                return 1
+            fi
+            if ! is_truthy "$allow_cloud"; then
+                err "Cloud cutover backend is locked by default."
+                muted "Pass --allow-cloud or set CUTOVER_TEST_ALLOW_CLOUD=true."
+                return 1
+            fi
+            ensure_psycopg_driver || return 1
+            if ! check_cloud_postgres_connectivity "$db_url" >/dev/null 2>&1; then
+                err "Cloud PostgreSQL connectivity check failed."
+                return 1
+            fi
+            info "Cutover smoke backend: postgres-cloud (explicit external database)"
+            env \
+                CUTOVER_TEST_BACKEND=postgres \
+                CUTOVER_TEST_REQUIRE_POSTGRES=true \
+                CUTOVER_TEST_DATABASE_URL="$db_url" \
+                "${cmd[@]}"
+            ;;
+        *)
+            err "Unsupported cutover backend: $backend"
+            return 1
+            ;;
+    esac
+}
+
+cmd_cutover() {
+    local scenario="${1:-smoke}"
+    if [[ $# -gt 0 ]]; then
+        shift
+    fi
+
+    if [[ "$scenario" == "descope-setup" ]]; then
+        local python_bin="python3"
+        if [[ -f "$SCRIPT_DIR/.venv/bin/python" ]]; then
+            python_bin="$SCRIPT_DIR/.venv/bin/python"
+        fi
+        local setup_script="$SCRIPT_DIR/scripts/setup_descope_provider.py"
+        if [[ ! -f "$setup_script" ]]; then
+            err "Descope setup helper not found: $setup_script"
+            return 1
+        fi
+        info "Running Descope setup helper..."
+        "$python_bin" "$setup_script" "$@"
+        return $?
+    fi
+
+    if [[ "$scenario" != "smoke" ]]; then
+        err "Unknown cutover scenario: $scenario"
+        muted "Usage: ./run cutover smoke [--backend ...] [--launch ...] [--db-url ...]"
+        muted "       ./run cutover descope-setup --project-id <id> [--dry-run]"
+        return 1
+    fi
+
+    local backend="${CUTOVER_SMOKE_BACKEND:-auto}"
+    local launch="${CUTOVER_SMOKE_LAUNCH:-auto}"
+    local db_url="${CUTOVER_TEST_DATABASE_URL:-}"
+    local allow_cloud="${CUTOVER_TEST_ALLOW_CLOUD:-false}"
+    local no_fallback=false
+    local -a passthrough=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --backend)
+                if [[ $# -lt 2 ]]; then
+                    err "--backend requires a value."
+                    return 1
+                fi
+                backend="$2"
+                shift 2
+                ;;
+            --launch)
+                if [[ $# -lt 2 ]]; then
+                    err "--launch requires a value."
+                    return 1
+                fi
+                launch="$2"
+                shift 2
+                ;;
+            --db-url)
+                if [[ $# -lt 2 ]]; then
+                    err "--db-url requires a value."
+                    return 1
+                fi
+                db_url="$2"
+                shift 2
+                ;;
+            --allow-cloud)
+                allow_cloud=true
+                shift
+                ;;
+            --no-fallback)
+                no_fallback=true
+                shift
+                ;;
+            --)
+                shift
+                passthrough=("$@")
+                break
+                ;;
+            *)
+                passthrough+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    backend=$(echo "$backend" | tr '[:upper:]' '[:lower:]')
+    launch=$(echo "$launch" | tr '[:upper:]' '[:lower:]')
+
+    case "$backend" in
+        auto|sqlite|postgres-local|postgres-cloud)
+            ;;
+        *)
+            err "Invalid --backend value: $backend"
+            muted "Valid values: auto, sqlite, postgres-local, postgres-cloud"
+            return 1
+            ;;
+    esac
+
+    case "$launch" in
+        auto|local|cloud)
+            ;;
+        *)
+            err "Invalid --launch value: $launch"
+            muted "Valid values: auto, local, cloud"
+            return 1
+            ;;
+    esac
+
+    local runtime_env="${AGENTGATE_ENV:-development}"
+    runtime_env=$(echo "$runtime_env" | tr '[:upper:]' '[:lower:]')
+
+    local allow_sqlite_fallback=true
+    if [[ "$runtime_env" == "staging" || "$runtime_env" == "production" ]]; then
+        allow_sqlite_fallback=false
+    fi
+    if is_truthy "${CUTOVER_ALLOW_SQLITE_FALLBACK:-}"; then
+        allow_sqlite_fallback=true
+    fi
+
+    local -a attempts=()
+    if [[ "$backend" != "auto" ]]; then
+        attempts=("$backend")
+    else
+        case "$launch" in
+            local)
+                attempts=("postgres-local")
+                ;;
+            cloud)
+                attempts=("postgres-cloud" "postgres-local")
+                ;;
+            auto)
+                if [[ -n "$db_url" ]]; then
+                    attempts=("postgres-cloud" "postgres-local")
+                elif [[ "$runtime_env" == "staging" || "$runtime_env" == "production" ]]; then
+                    attempts=("postgres-local")
+                else
+                    attempts=("postgres-local")
+                fi
+                ;;
+        esac
+        if $allow_sqlite_fallback; then
+            attempts+=("sqlite")
+        fi
+    fi
+
+    if $no_fallback && [[ ${#attempts[@]} -gt 1 ]]; then
+        attempts=("${attempts[0]}")
+    fi
+
+    info "Running identity cutover smoke scenario..."
+    muted "Launch mode: $launch"
+    muted "Backend strategy: ${attempts[*]}"
+    muted "This command runs integration tests only. It does not launch dashboard/API."
+    muted "For a clean runtime launch use: ./run demo --fresh"
+    if [[ -n "$db_url" ]]; then
+        muted "Cloud database URL provided via explicit override"
+    fi
+    echo ""
+
+    local attempt
+    local success_backend=""
+    for attempt in "${attempts[@]}"; do
+        if run_cutover_smoke_attempt "$attempt" "$db_url" "$allow_cloud" "${passthrough[@]}"; then
+            success_backend="$attempt"
+            break
+        fi
+        warn "Cutover smoke failed on backend '$attempt'."
+        if $no_fallback; then
+            break
+        fi
+        muted "Attempting next fallback backend..."
+        echo ""
+    done
+
+    if [[ -z "$success_backend" ]]; then
+        err "Cutover smoke scenario failed for all configured backends."
+        return 1
+    fi
+
+    info "Cutover smoke scenario passed on backend: $success_backend"
+}
+
+cmd_clean() {
+    local wipe_data=false
+    if [[ "${1:-}" == "--wipe-data" ]]; then
+        wipe_data=true
+    fi
+
+    if $wipe_data; then
+        record_container_event "clean" "start" "clean --wipe-data requested"
+        if ! confirm_action "This will remove containers, VOLUMES, and caches. Continue?"; then
+            muted "Aborted."
+            return 0
+        fi
+    else
+        record_container_event "clean" "start" "clean requested"
+        if ! confirm_action "This will remove containers and caches (volumes preserved). Continue?"; then
+            muted "Aborted."
+            return 0
+        fi
+    fi
+
+    echo ""
+    info "Stopping and removing containers..."
+    if $wipe_data; then
+        docker compose down -v --remove-orphans 2>/dev/null || true
+        docker compose --profile test down -v --remove-orphans 2>/dev/null || true
+        local project_name
+        project_name="$(compose_project_name)"
+        local lingering_volumes
+        lingering_volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project_name" || true)
+        if [[ -n "$lingering_volumes" ]]; then
+            echo "$lingering_volumes" | xargs -r docker volume rm -f >/dev/null 2>&1 || true
+        fi
+    else
+        docker compose down --remove-orphans 2>/dev/null || true
+        docker compose --profile test down --remove-orphans 2>/dev/null || true
+    fi
+
+    info "Clearing Python caches..."
+    find "$SCRIPT_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    find "$SCRIPT_DIR" -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+    rm -rf "$SCRIPT_DIR/.ruff_cache" 2>/dev/null || true
+
+    info "Clearing Next.js cache..."
+    rm -rf "$SCRIPT_DIR/dashboard/.next" 2>/dev/null || true
+    rm -rf "$SCRIPT_DIR/dashboard/node_modules/.cache" 2>/dev/null || true
+
+    echo ""
+    if $wipe_data; then
+        warn "Volumes removed. Database and server state were reset."
+        record_container_event "clean" "completed" "clean --wipe-data completed"
+    else
+        info "Clean complete (volumes preserved)."
+        muted "Run './run clean --wipe-data' only for intentional full reset."
+        record_container_event "clean" "completed" "clean completed volumes preserved"
+    fi
+}
+
+cmd_stop() {
+    record_container_event "stop" "start" "stop command requested"
+    info "Stopping containers (preserving volumes)..."
+    docker compose down --remove-orphans 2>/dev/null || true
+    docker compose --profile test down --remove-orphans 2>/dev/null || true
+    info "Services stopped."
+    muted "User credentials and state are preserved in Docker volumes."
+    record_container_event "stop" "completed" "services stopped volumes preserved"
+}
+
+resolve_ea_agentgate_cli() {
+    if [[ -x "$SCRIPT_DIR/.venv/bin/ea-agentgate" ]]; then
+        echo "$SCRIPT_DIR/.venv/bin/ea-agentgate"
+        return 0
+    fi
+    if command -v ea-agentgate >/dev/null 2>&1; then
+        command -v ea-agentgate
+        return 0
+    fi
+    return 1
+}
+
+cmd_ops() {
+    local cli_path
+    if ! cli_path=$(resolve_ea_agentgate_cli); then
+        err "ea-agentgate CLI not found. Install dependencies first."
+        muted "Run: uv sync --extra dev --extra server"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        exec "$cli_path" --help
+    fi
+
+    exec "$cli_path" "$@"
+}
+
+cmd_gate() {
+    local mode="full"
+    if [[ $# -gt 0 ]] && [[ "$1" == "full" || "$1" == "infra" || "$1" == "lint" || "$1" == "test" ]]; then
+        mode="$1"
+        shift
+    fi
+
+    case "$mode" in
+        full)
+            info "Running chronological quality gate (phase 1 -> phase 2 -> phase 3)"
+            echo ""
+
+            if ! cmd_infra_audit; then
+                return 1
+            fi
+
+            echo ""
+            info "Phase 2: Style and structure audit"
+            echo ""
+            if ! cmd_lint; then
+                return 1
+            fi
+
+            echo ""
+            info "Phase 3: Test execution"
+            echo ""
+            cmd_test --no-open "$@"
+
+            local run_preprod_gate=false
+            if [[ "${MCP_PREPROD_GATE:-false}" == "true" ]]; then
+                run_preprod_gate=true
+            fi
+            if [[ "${AGENTGATE_ENV:-development}" == "staging" || "${AGENTGATE_ENV:-development}" == "production" ]]; then
+                run_preprod_gate=true
+            fi
+
+            if $run_preprod_gate; then
+                echo ""
+                info "Phase 4: MCP pre-production policy-governance validation"
+                echo ""
+                if ! cmd_preprod_mcp_gate; then
+                    return 1
+                fi
+            else
+                warn "Skipping MCP pre-production gate in development profile."
+                muted "Set MCP_PREPROD_GATE=true to enforce local pre-production validation."
+            fi
+            ;;
+        infra)
+            cmd_infra_audit
+            ;;
+        lint)
+            cmd_lint
+            ;;
+        test)
+            cmd_test --no-open "$@"
+            ;;
+        *)
+            err "Unknown gate mode: $mode"
+            muted "Valid modes: full, infra, lint, test"
+            return 1
+            ;;
+    esac
+}
+
+cmd_seed() {
+    warn "Credential seeding is disabled."
+    info "Initial credentials must be created via browser onboarding."
+    muted "Open: http://localhost:3000/setup"
+    open_url "http://localhost:3000/setup"
+}
+
+check_service() {
+    # Returns: "healthy", "running", "port-conflict", or "offline"
+    local name="$1" port="$2" docker_svc="$3"
+    local docker_running=false
+    local compose_ps_output
+
+    # Check if this project's docker compose service is running
+    compose_ps_output="$(docker compose ps --status running 2>/dev/null || true)"
+    if [[ "$compose_ps_output" == *"$docker_svc"* ]]; then
+        docker_running=true
+    fi
+
+    case "$name" in
+        "API Server")
+            # Verify the health endpoint returns AgentGate's signature
+            local body
+            body=$(curl -sf "http://localhost:${port}/api/health" 2>/dev/null || true)
+            if [[ -n "$body" ]] && echo "$body" | grep -q '"status"'; then
+                if $docker_running; then
+                    echo "healthy (docker)"
+                else
+                    # Port has our API but not via docker -- local dev
+                    echo "healthy (local)"
+                fi
+                return
+            fi
+            # Something else is on the port
+            if curl -sf "http://localhost:${port}" &>/dev/null; then
+                echo "port conflict"
+                return
+            fi
+            ;;
+        "Dashboard")
+            if $docker_running; then
+                echo "healthy (docker)"
+                return
+            fi
+            # For local dev, check if next dev is the process on port 3000
+            if lsof -iTCP:"$port" -sTCP:LISTEN 2>/dev/null \
+                | grep -q node; then
+                echo "healthy (local)"
+                return
+            fi
+            if curl -sf "http://localhost:${port}" &>/dev/null; then
+                echo "port conflict"
+                return
+            fi
+            ;;
+        "PostgreSQL")
+            if $docker_running; then
+                echo "running (docker)"
+                return
+            fi
+            ;;
+        "Redis")
+            if $docker_running; then
+                echo "running (docker)"
+                return
+            fi
+            # Check if redis-cli ping works and it's local redis
+            if command -v redis-cli &>/dev/null; then
+                if redis-cli -p "$port" ping 2>/dev/null | grep -q PONG; then
+                    echo "running (local)"
+                    return
+                fi
+            fi
+            ;;
+    esac
+
+    echo "offline"
+}
+
+cmd_status() {
+    local fmt="%-14s %-8s %s\n"
+
+    # Collect statuses
+    local api_status dash_status pg_status redis_status
+    api_status=$(check_service "API Server" 8000 "server")
+    dash_status=$(check_service "Dashboard" 3000 "dashboard")
+    pg_status=$(check_service "PostgreSQL" 5432 "db")
+    redis_status=$(check_service "Redis" 6379 "redis")
+
+    if $HAS_GUM; then
+        local lines=()
+        lines+=("SERVICE        PORT     STATUS")
+        lines+=("-------------- -------- ----------------")
+        lines+=("$(printf "$fmt" "API Server" "8000" "$api_status")")
+        lines+=("$(printf "$fmt" "Dashboard" "3000" "$dash_status")")
+        lines+=("$(printf "$fmt" "PostgreSQL" "5432" "$pg_status")")
+        lines+=("$(printf "$fmt" "Redis" "6379" "$redis_status")")
+
+        printf '%s\n' "${lines[@]}" | gum style \
+            --border rounded \
+            --border-foreground "$C_BORDER" \
+            --foreground "$C_TEXT" \
+            --padding "1 2" \
+            --margin "0 2"
+    else
+        echo ""
+        printf "  ${BOLD}$fmt${RESET}" "SERVICE" "PORT" "STATUS"
+        echo "  -------------- -------- ----------------"
+
+        local name status color
+        for pair in "API Server:$api_status" \
+                    "Dashboard:$dash_status" \
+                    "PostgreSQL:$pg_status" \
+                    "Redis:$redis_status"; do
+            name="${pair%%:*}"
+            status="${pair#*:}"
+            color="$RED"
+            if [[ "$status" == healthy* || "$status" == running* ]]; then
+                color="$GREEN"
+            elif [[ "$status" == "port conflict" ]]; then
+                color="$YELLOW"
+            fi
+            local port_map
+            case "$name" in
+                "API Server") port_map="8000" ;;
+                "Dashboard")  port_map="3000" ;;
+                "PostgreSQL") port_map="5432" ;;
+                "Redis")      port_map="6379" ;;
+            esac
+            printf "  $fmt" "$name" "$port_map" \
+                "$(echo -e "${color}${status}${RESET}")"
+        done
+    fi
+
+    echo ""
+
+    # Docker compose status -- only show if containers are actually running
+    local compose_out
+    compose_out=$(docker compose ps 2>/dev/null || true)
+    if echo "$compose_out" | tail -n +2 | grep -q .; then
+        muted "Docker Compose containers:"
+        echo ""
+        echo "$compose_out"
+    fi
+}
+
+cmd_logs() {
+    docker compose logs -f "$@"
+}
+
+cmd_help() {
+    if $HAS_GUM; then
+        gum style \
+            --foreground "$C_TEXT" \
+            --padding "0 2" \
+            --margin "0 2" \
+            "USAGE" \
+            "  ./run [command] [args]" \
+            "" \
+            "INFRASTRUCTURE" \
+            "  demo      Full stack: docker compose + health checks + open browser" \
+            "            Options: --fresh|--from-zero, --no-open" \
+            "  dev       Local dev: uvicorn --reload + next dev (no Docker)" \
+            "  gate      Chronological quality gate (infra -> lint -> test)" \
+            "  stop      Stop docker services and preserve all volumes" \
+            "  test      Run test suite (delegates to ./test)" \
+            "  cutover   Identity cutover workflows (smoke + descope setup helper)" \
+            "  verify    Formal verification utilities (chaos/latest/history/run/scrub/organize/report)" \
+            "  lint      Run ruff + pylint + dashboard build check" \
+            "  docs-check Build docs bundle + enforce docs governance" \
+            "  migrate   Alembic migration helpers (up/down/current/history/heads/create)" \
+            "  clean     Remove containers/caches (volumes preserved)" \
+            "  clean --wipe-data  Full reset: remove volumes and caches" \
+            "  seed      Open browser onboarding (/setup)" \
+            "  status    Show running services, ports, and health" \
+            "  logs      Tail docker compose logs" \
+            "  ops       Run ea-agentgate CLI via ./run ops <args>" \
+            "  help      Show this help message" \
+            "" \
+            "OPERATIONS EXAMPLES (single entry: ./run)" \
+            "  ./run ops login" \
+            "  ./run ops overview" \
+            "  ./run ops threats list" \
+            "  ./run ops pii detect \"Contact me at user@example.com\"" \
+            "  ./run ops pii redact --session-id demo-session \"SSN 123-45-6789\"" \
+            "" \
+            "CUTOVER EXAMPLES (environment-aware fallback)" \
+            "  ./run demo --fresh" \
+            "  ./run cutover smoke" \
+            "  ./run cutover smoke --backend postgres-local" \
+            "  ./run cutover smoke --backend postgres-cloud --db-url <url> --allow-cloud" \
+            "  ./run cutover descope-setup --project-id <id> --dry-run" \
+            "  ./run verify formal chaos single" \
+            "  ./run verify formal chaos parallel" \
+            "  ./run verify formal chaos custom --count 150k --workers 8 --seed 77 --enforce-runtime" \
+            "  ./run verify formal run --count 100k --workers 6 --enforce-runtime" \
+            "  ./run verify formal scrub --source-profile latest-forensic" \
+            "  ./run verify formal organize --execute" \
+            "  ./run verify formal report --source-profile latest-forensic --format both --strict-pdf" \
+            "  ./run verify mcp policy-validation --profile staging --count 100k" \
+            "  ./run verify mcp scrub --source tests/artifacts/algorithm/policy_governance_validation/<run>" \
+            "" \
+            "  All operations support --json for machine-readable output." \
+            "  Run './run ops --help' for the full command reference."
+    else
+        echo -e "  ${BOLD}USAGE${RESET}"
+        echo "    ./run [command] [args]"
+        echo ""
+        echo -e "  ${BOLD}INFRASTRUCTURE${RESET}"
+        echo "    demo      Full stack: docker compose + health checks + open browser"
+        echo "              Options: --fresh|--from-zero, --no-open"
+        echo "    dev       Local dev: uvicorn --reload + next dev (no Docker)"
+        echo "    gate      Chronological quality gate (infra -> lint -> test)"
+        echo "    stop      Stop docker services and preserve all volumes"
+        echo "    test      Run test suite (delegates to ./test)"
+        echo "    cutover   Identity cutover workflows (smoke + descope setup helper)"
+        echo "    verify    Formal verification utilities (chaos/latest/history/run/scrub/organize/report)"
+        echo "    lint      Run ruff + pylint + dashboard build check"
+        echo "    docs-check Build docs bundle + enforce docs governance"
+        echo "    migrate   Alembic migration helpers (up/down/current/history/heads/create)"
+        echo "    clean     Remove containers/caches (volumes preserved)"
+        echo "    clean --wipe-data  Full reset: remove volumes and caches"
+        echo "    seed      Open browser onboarding (/setup)"
+        echo "    status    Show running services, ports, and health"
+        echo "    logs      Tail docker compose logs"
+        echo "    ops       Run ea-agentgate CLI via ./run ops <args>"
+        echo "    help      Show this help message"
+        echo ""
+        echo -e "  ${BOLD}OPERATIONS EXAMPLES (single entry: ./run)${RESET}"
+        echo "    ./run ops login"
+        echo "    ./run ops overview"
+        echo "    ./run ops threats list"
+        echo "    ./run ops pii detect \"Contact me at user@example.com\""
+        echo "    ./run ops pii redact --session-id demo-session \"SSN 123-45-6789\""
+        echo ""
+        echo -e "  ${BOLD}CUTOVER EXAMPLES (environment-aware fallback)${RESET}"
+        echo "    ./run demo --fresh"
+        echo "    ./run cutover smoke"
+        echo "    ./run cutover smoke --backend postgres-local"
+        echo "    ./run cutover smoke --backend postgres-cloud --db-url <url> --allow-cloud"
+        echo "    ./run cutover descope-setup --project-id <id> --dry-run"
+        echo "    ./run verify formal chaos single"
+        echo "    ./run verify formal chaos parallel"
+        echo "    ./run verify formal chaos custom --count 150k --workers 8 --seed 77 --enforce-runtime"
+        echo "    ./run verify formal run --count 100k --workers 6 --enforce-runtime"
+        echo "    ./run verify formal scrub --source-profile latest-forensic"
+        echo "    ./run verify formal organize --execute"
+        echo "    ./run verify formal report --source-profile latest-forensic --format both --strict-pdf"
+        echo "    ./run verify mcp policy-validation --profile staging --count 100k"
+        echo "    ./run verify mcp scrub --source tests/artifacts/algorithm/policy_governance_validation/<run>"
+        echo ""
+        echo "    All operations support --json for machine-readable output."
+        echo "    Run './run ops --help' for the full command reference."
+    fi
+
+    echo ""
+}
+
+cmd_menu() {
+    local choice
+    if $HAS_GUM; then
+        choice=$(gum choose \
+            --cursor.foreground "$C_PRIMARY" \
+            --selected.foreground "$C_PRIMARY" \
+            --header "Select a command:" \
+            --header.foreground "$C_TEXT" \
+            "demo      - Full stack with Docker" \
+            "dev       - Local development servers" \
+            "gate      - Chronological quality gate" \
+            "stop      - Stop Docker services (preserve data)" \
+            "test      - Run test suite" \
+            "cutover   - Identity cutover + Descope setup helper" \
+            "verify    - Formal verification tools (chaos/latest/report)" \
+            "lint      - Lint and type checks" \
+            "docs-check - Build docs bundle and governance checks" \
+            "migrate   - Alembic migration helpers" \
+            "status    - Show service status" \
+            "seed      - Configure admin user" \
+            "logs      - Tail Docker logs" \
+            "clean     - Remove containers and caches" \
+            "clean-wipe-data - Full destructive reset" \
+            "help      - Show all commands")
+        # Extract command name (first word before spaces)
+        choice="${choice%% *}"
+        choice="$(echo "$choice" | tr -d '[:space:]')"
+    else
+        echo -e "  ${BOLD}Select a command:${RESET}"
+        echo ""
+        echo "    1) demo      - Full stack with Docker"
+        echo "    2) dev       - Local development servers"
+        echo "    3) gate      - Chronological quality gate"
+        echo "    4) stop      - Stop Docker services (preserve data)"
+        echo "    5) test      - Run test suite"
+        echo "    6) cutover   - Identity cutover + Descope setup helper"
+        echo "    7) verify    - Formal verification tools (chaos/latest/report)"
+        echo "    8) lint      - Lint and type checks"
+        echo "    9) docs-check - Build docs bundle and governance checks"
+        echo "   10) migrate   - Alembic migration helpers"
+        echo "   11) status    - Show service status"
+        echo "   12) seed      - Configure admin user"
+        echo "   13) logs      - Tail Docker logs"
+        echo "   14) clean     - Remove containers and caches"
+        echo "   15) clean --wipe-data - Full destructive reset"
+        echo "   16) help      - Show all commands"
+        echo ""
+        echo -en "  ${GREEN}Enter choice [1-16]: ${RESET}"
+        read -r num
+        case "$num" in
+            1) choice="demo" ;;
+            2) choice="dev" ;;
+            3) choice="gate" ;;
+            4) choice="stop" ;;
+            5) choice="test" ;;
+            6) choice="cutover" ;;
+            7) choice="verify" ;;
+            8) choice="lint" ;;
+            9) choice="docs-check" ;;
+            10) choice="migrate" ;;
+            11) choice="status" ;;
+            12) choice="seed" ;;
+            13) choice="logs" ;;
+            14) choice="clean" ;;
+            15) choice="clean-wipe-data" ;;
+            16) choice="help" ;;
+            *)
+                err "Invalid choice."
+                return 1
+                ;;
+        esac
+    fi
+
+    echo ""
+
+    case "$choice" in
+        demo)   cmd_demo "$@" ;;
+        dev)    cmd_dev ;;
+        gate)   cmd_gate full ;;
+        stop)   cmd_stop ;;
+        test)   cmd_test ;;
+        cutover) cmd_cutover smoke ;;
+        verify) cmd_verify latest ;;
+        lint)   cmd_lint ;;
+        docs-check) cmd_docs_check ;;
+        migrate) cmd_migrate current ;;
+        status) cmd_status ;;
+        seed)   cmd_seed ;;
+        logs)   cmd_logs ;;
+        clean)  cmd_clean ;;
+        clean-wipe-data) cmd_clean --wipe-data ;;
+        help)   cmd_help ;;
+        *)
+            err "Unknown command: $choice"
+            return 1
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Gum install hint
+# ---------------------------------------------------------------------------
+suggest_gum() {
+    if ! $HAS_GUM; then
+        muted "Tip: Install gum for a better experience:"
+        muted "  brew install gum    (macOS)"
+        muted "  https://github.com/charmbracelet/gum"
+        echo ""
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+main() {
+    local cmd="${1:-}"
+
+    if [[ -n "$cmd" ]]; then
+        shift
+    fi
+
+    # Show banner and run env setup once, up front
+    banner
+    setup_env
+
+    case "$cmd" in
+        demo)   cmd_demo "$@" ;;
+        dev)    cmd_dev ;;
+        gate)   cmd_gate "$@" ;;
+        stop)   cmd_stop ;;
+        test)   cmd_test "$@" ;;
+        cutover) cmd_cutover "$@" ;;
+        verify) cmd_verify "$@" ;;
+        lint)   cmd_lint ;;
+        docs-check) cmd_docs_check ;;
+        migrate) cmd_migrate "$@" ;;
+        clean)  cmd_clean "$@" ;;
+        seed)   cmd_seed ;;
+        status) cmd_status ;;
+        logs)   cmd_logs "$@" ;;
+        ops)    cmd_ops "$@" ;;
+        help|--help|-h)
+            cmd_help
+            suggest_gum
+            ;;
+        "")
+            suggest_gum
+            cmd_menu
+            ;;
+        *)
+            err "Unknown command: $cmd"
+            echo ""
+            cmd_help
+            return 1
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,109 @@
+{
+  "policy_set_id": "default_guardrails",
+  "version": "1.0.0",
+  "description": "Default security guardrails for tool execution",
+  "default_effect": "allow",
+  "rules": [
+    {
+      "rule_id": "block_dangerous_commands",
+      "description": "Block execution of dangerous system commands",
+      "priority": 100,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "in",
+          "value": ["rm", "exec", "eval", "del", "delete"]
+        }
+      ]
+    },
+    {
+      "rule_id": "block_rm_tool",
+      "description": "Block rm and delete operations on critical paths",
+      "priority": 100,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "matches",
+          "value": "^(rm|delete|remove)_.*"
+        },
+        {
+          "field": "request.inputs.path",
+          "operator": "matches",
+          "value": "^(/etc|/bin|/sbin|/usr|/var|C:/Windows|C:/System32)"
+        }
+      ]
+    },
+    {
+      "rule_id": "block_filesystem_root_access",
+      "description": "Block access to filesystem root directories",
+      "priority": 90,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.inputs.path",
+          "operator": "in",
+          "value": ["/", "C:/", "C:\\", "/root", "/home"]
+        }
+      ]
+    },
+    {
+      "rule_id": "require_auth_for_sensitive_tools",
+      "description": "Require user authentication for sensitive operations",
+      "priority": 80,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "in",
+          "value": ["delete_database", "drop_table", "execute_sql"]
+        },
+        {
+          "field": "request.user.id",
+          "operator": "not_exists",
+          "value": null
+        }
+      ]
+    },
+    {
+      "rule_id": "block_sql_injection_patterns",
+      "description": "Block common SQL injection patterns in inputs",
+      "priority": 95,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.inputs.query",
+          "operator": "matches",
+          "value": "(DROP\\s+TABLE|DELETE\\s+FROM|TRUNCATE|;\\s*--|'\\s+OR\\s+'1'='1)"
+        }
+      ]
+    },
+    {
+      "rule_id": "block_path_traversal",
+      "description": "Block path traversal attempts",
+      "priority": 95,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.inputs.path",
+          "operator": "contains",
+          "value": "../"
+        }
+      ]
+    },
+    {
+      "rule_id": "rate_limit_file_operations",
+      "description": "Allow file operations but log for monitoring",
+      "priority": 10,
+      "effect": "allow",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "matches",
+          "value": "^(read|write|list)_.*"
+        }
+      ]
+    }
+  ]
+}

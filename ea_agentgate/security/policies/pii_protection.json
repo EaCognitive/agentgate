@@ -1,0 +1,88 @@
+{
+  "policy_set_id": "pii_protection",
+  "version": "1.0.0",
+  "description": "PII protection and compliance policies",
+  "default_effect": "allow",
+  "rules": [
+    {
+      "rule_id": "require_auth_for_pii_access",
+      "description": "Require authenticated user for PII operations",
+      "priority": 100,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "matches",
+          "value": ".*pii.*"
+        },
+        {
+          "field": "request.user.id",
+          "operator": "not_exists",
+          "value": null
+        }
+      ]
+    },
+    {
+      "rule_id": "block_pii_export_without_approval",
+      "description": "Block PII export operations without approval metadata",
+      "priority": 95,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "in",
+          "value": ["export_pii", "download_pii_data", "extract_pii"]
+        },
+        {
+          "field": "request.metadata.approved_by",
+          "operator": "not_exists",
+          "value": null
+        }
+      ]
+    },
+    {
+      "rule_id": "audit_pii_operations",
+      "description": "Allow but audit all PII read operations",
+      "priority": 50,
+      "effect": "allow",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "matches",
+          "value": "^(read|get|fetch)_pii.*"
+        }
+      ]
+    },
+    {
+      "rule_id": "block_pii_regex_patterns",
+      "description": "Block inputs containing PII patterns (SSN, credit cards)",
+      "priority": 90,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.inputs.data",
+          "operator": "matches",
+          "value": "\\d{3}-\\d{2}-\\d{4}"
+        }
+      ]
+    },
+    {
+      "rule_id": "require_encryption_for_pii_storage",
+      "description": "Deny PII storage without encryption flag",
+      "priority": 85,
+      "effect": "deny",
+      "conditions": [
+        {
+          "field": "request.tool",
+          "operator": "in",
+          "value": ["store_pii", "save_pii", "write_pii"]
+        },
+        {
+          "field": "request.inputs.encrypted",
+          "operator": "neq",
+          "value": true
+        }
+      ]
+    }
+  ]
+}

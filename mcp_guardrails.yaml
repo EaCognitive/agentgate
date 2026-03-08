@@ -1,0 +1,27 @@
+version: "1.0"
+
+blocked_operations:
+  - mcp_settings_update
+
+require_approval:
+  - block_ip_temp
+  - revoke_token
+  - apply_policy
+  - create_incident
+  - unlock_policy
+  - mcp_users_create
+  - mcp_users_update
+
+rate_limits:
+  block_ip_temp: 10
+  revoke_token: 5
+  apply_policy: 3
+  create_incident: 10
+  mcp_users_create: 5
+
+safety:
+  require_confirm_flow: true
+  max_ips_per_session: 10
+  destructive_cooldown_seconds: 5
+  log_all_operations: true
+  require_mfa_for_destructive: false

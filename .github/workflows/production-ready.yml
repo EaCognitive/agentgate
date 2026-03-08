@@ -1,0 +1,47 @@
+name: Production Ready Checks
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: production-ready-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: Lint + Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --extra server --extra all --extra enterprise --extra async
+
+      - name: Bootstrap runtime schema for production-ready tests
+        run: uv run python scripts/bootstrap_ci_runtime.py
+
+      - name: Run lint
+        run: uv run ruff check .
+
+      - name: Run naming governance check
+        run: uv run python scripts/check_naming_conventions.py
+
+      - name: Run tests
+        run: uv run pytest tests/ -q --tb=short -m "unit or not integration"
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          TESTING: "true"
+          AGENTGATE_ENV: test
+          AGENTGATE_RUNTIME_PROFILE: local_compat
+          AGENTGATE_PROFILE: local_compat
